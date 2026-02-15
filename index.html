@@ -1,0 +1,1311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BIOMETRIC ANALYSIS // SUBJECT IDENTIFICATION</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --cyan: #00f0ff;
+      --cyan-dim: #00f0ff44;
+      --cyan-glow: #00f0ff88;
+      --cyan-dark: #003844;
+      --magenta: #ff006a;
+      --amber: #ffaa00;
+      --green: #00ff88;
+      --red: #ff3344;
+      --bg: #030810;
+      --panel-bg: #060e18;
+      --border: #0a2a3a;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      background: var(--bg);
+      color: #c0dde8;
+      font-family: 'Share Tech Mono', monospace;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Animated grid background */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        linear-gradient(rgba(0,240,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,240,255,0.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+      animation: gridScroll 20s linear infinite;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    @keyframes gridScroll {
+      to { transform: translate(40px, 40px); }
+    }
+
+    /* Vignette overlay — only covers the video area */
+    #container::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.5) 100%);
+      pointer-events: none;
+      z-index: 3;
+    }
+
+    /* Header */
+    #header {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 24px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(0,240,255,0.06) 0%, transparent 100%);
+    }
+
+    #header .logo {
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 900;
+      font-size: 0.85rem;
+      letter-spacing: 0.2em;
+      color: var(--cyan);
+      text-shadow: 0 0 20px var(--cyan-glow), 0 0 40px var(--cyan-dim);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    #header .logo .hex {
+      width: 28px;
+      height: 28px;
+      position: relative;
+    }
+
+    #header .logo .hex::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: var(--cyan);
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+      opacity: 0.3;
+      animation: hexPulse 2s ease-in-out infinite;
+    }
+
+    #header .logo .hex::after {
+      content: '';
+      position: absolute;
+      inset: 3px;
+      background: var(--bg);
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    }
+
+    @keyframes hexPulse {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 0.8; }
+    }
+
+    #header .sys-info {
+      font-size: 0.65rem;
+      color: #3a6a7a;
+      text-align: right;
+      letter-spacing: 0.08em;
+    }
+
+    #header .sys-info .live {
+      color: var(--green);
+      animation: blink 1s step-end infinite;
+    }
+
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+
+    #status {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.6rem;
+      letter-spacing: 0.15em;
+      color: var(--cyan);
+      text-transform: uppercase;
+      padding: 6px 24px;
+      background: rgba(0,240,255,0.04);
+      border-bottom: 1px solid var(--border);
+      position: relative;
+      z-index: 10;
+    }
+
+    #status::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      width: 100%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+      animation: scanLine 3s linear infinite;
+    }
+
+    @keyframes scanLine {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(100%); }
+    }
+
+    /* Main layout */
+    #main {
+      display: flex;
+      height: calc(100vh - 90px);
+      position: relative;
+      z-index: 10;
+    }
+
+    /* Video container */
+    #container {
+      flex: 1;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      border-right: 1px solid var(--border);
+    }
+
+    video {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      filter: saturate(0.4) brightness(0.85) contrast(1.1);
+    }
+
+    /* HUD overlay on video */
+    #hud-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    /* Scanline effect */
+    #hud-overlay::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,240,255,0.015) 2px,
+        rgba(0,240,255,0.015) 4px
+      );
+    }
+
+    /* Sweeping scan bar */
+    #hud-overlay::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, transparent 10%, var(--cyan-glow) 50%, transparent 90%);
+      box-shadow: 0 0 30px 10px var(--cyan-dim);
+      animation: sweepScan 3s ease-in-out infinite;
+    }
+
+    @keyframes sweepScan {
+      0% { top: -3px; opacity: 0; }
+      10% { opacity: 1; }
+      90% { opacity: 1; }
+      100% { top: 100%; opacity: 0; }
+    }
+
+    /* Corner brackets on video */
+    .corner-tl, .corner-tr, .corner-bl, .corner-br {
+      position: absolute;
+      width: 40px;
+      height: 40px;
+      z-index: 6;
+      pointer-events: none;
+    }
+    .corner-tl { top: 16px; left: 16px; border-top: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+    .corner-tr { top: 16px; right: 16px; border-top: 2px solid var(--cyan); border-right: 2px solid var(--cyan); }
+    .corner-bl { bottom: 16px; left: 16px; border-bottom: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+    .corner-br { bottom: 16px; right: 16px; border-bottom: 2px solid var(--cyan); border-right: 2px solid var(--cyan); }
+
+    /* HUD corner data readouts */
+    .hud-data {
+      position: absolute;
+      z-index: 7;
+      font-size: 0.55rem;
+      color: #3a7a8a;
+      letter-spacing: 0.1em;
+      pointer-events: none;
+    }
+    .hud-data.top-left { top: 20px; left: 64px; }
+    .hud-data.top-right { top: 20px; right: 64px; text-align: right; }
+    .hud-data.bottom-left { bottom: 20px; left: 64px; }
+    .hud-data.bottom-right { bottom: 20px; right: 64px; text-align: right; }
+
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 4;
+    }
+
+    /* Face targeting reticle label */
+    .age-label {
+      position: absolute;
+      pointer-events: none;
+      z-index: 8;
+      white-space: nowrap;
+    }
+    .age-label-inner {
+      background: linear-gradient(135deg, rgba(0,15,25,0.88) 0%, rgba(0,30,50,0.82) 100%);
+      border: 1px solid var(--cyan-dim);
+      border-left: 2px solid var(--cyan);
+      padding: 6px 12px;
+      position: relative;
+      backdrop-filter: blur(8px);
+      clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+    }
+    .age-label .tag-line {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.5rem;
+      letter-spacing: 0.18em;
+      color: #3a8a9a;
+      text-transform: uppercase;
+    }
+    .age-label .age-value {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 1.5rem;
+      font-weight: 900;
+      color: var(--cyan);
+      text-shadow: 0 0 15px var(--cyan-glow);
+      line-height: 1.2;
+    }
+    .age-label .gender-tag {
+      font-size: 0.6rem;
+      color: var(--magenta);
+      letter-spacing: 0.1em;
+    }
+    /* Connector line from label to face */
+    .label-connector {
+      position: absolute;
+      width: 24px;
+      height: 1px;
+      background: var(--cyan-dim);
+      top: 50%;
+      right: -24px;
+    }
+
+    /* Side panel */
+    #panel {
+      width: 360px;
+      flex-shrink: 0;
+      background: var(--panel-bg);
+      overflow-y: auto;
+      padding: 0;
+      position: relative;
+    }
+
+    /* Panel scan line decoration */
+    #panel::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, var(--cyan), transparent);
+    }
+
+    .panel-header {
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .panel-header h2 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      color: var(--cyan);
+      text-shadow: 0 0 10px var(--cyan-dim);
+    }
+
+    .panel-header .pulse-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 8px var(--cyan);
+      animation: dotPulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes dotPulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.7); }
+    }
+
+    .no-face {
+      padding: 40px 20px;
+      text-align: center;
+      color: #2a4a5a;
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+    }
+
+    .no-face .searching {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.6rem;
+      color: var(--amber);
+      letter-spacing: 0.2em;
+      animation: blink 1.2s step-end infinite;
+      margin-top: 8px;
+    }
+
+    /* Face card */
+    .face-card {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+      animation: cardSlideIn 0.3s ease-out;
+    }
+
+    @keyframes cardSlideIn {
+      from { opacity: 0; transform: translateX(10px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .face-card::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: linear-gradient(180deg, var(--cyan), transparent);
+    }
+
+    .face-id {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.55rem;
+      letter-spacing: 0.2em;
+      color: #3a6a7a;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .face-id .conf {
+      color: var(--green);
+    }
+
+    /* Age display */
+    .age-display {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 4px;
+    }
+
+    .age-display .age-num {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 3rem;
+      font-weight: 900;
+      color: var(--cyan);
+      text-shadow: 0 0 30px var(--cyan-dim), 0 0 60px rgba(0,240,255,0.15);
+      line-height: 1;
+      position: relative;
+    }
+
+    .age-display .age-unit {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.6rem;
+      color: #3a7a8a;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+
+    .age-display .age-category {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.55rem;
+      letter-spacing: 0.15em;
+      padding: 2px 8px;
+      border: 1px solid var(--cyan-dim);
+      color: var(--cyan);
+    }
+
+    .age-range-bar {
+      margin: 10px 0 16px;
+      position: relative;
+      height: 16px;
+    }
+
+    .age-range-track {
+      position: absolute;
+      top: 7px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: #0a2030;
+    }
+
+    .age-range-fill {
+      position: absolute;
+      top: 7px;
+      height: 2px;
+      background: linear-gradient(90deg, var(--cyan-dim), var(--cyan));
+      box-shadow: 0 0 8px var(--cyan-dim);
+      transition: left 0.4s, width 0.4s;
+    }
+
+    .age-range-marker {
+      position: absolute;
+      top: 2px;
+      width: 12px;
+      height: 12px;
+      background: var(--cyan);
+      box-shadow: 0 0 12px var(--cyan-glow);
+      clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+      transition: left 0.4s;
+    }
+
+    .age-range-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.5rem;
+      color: #2a4a5a;
+      margin-top: 2px;
+      letter-spacing: 0.05em;
+    }
+
+    /* Section headers */
+    .section-hdr {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 14px 0 8px;
+    }
+
+    .section-hdr h3 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.5rem;
+      font-weight: 500;
+      letter-spacing: 0.2em;
+      color: #4a7a8a;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .section-hdr .line {
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(90deg, var(--border), transparent);
+    }
+
+    /* Reason list */
+    .reason-list {
+      list-style: none;
+      padding: 0;
+    }
+
+    .reason-list li {
+      font-size: 0.7rem;
+      padding: 5px 0;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      color: #7aacbc;
+      line-height: 1.4;
+      border-bottom: 1px solid rgba(10,42,58,0.5);
+    }
+
+    .reason-list li:last-child { border-bottom: none; }
+
+    .reason-list li .indicator {
+      width: 4px;
+      height: 4px;
+      border-radius: 1px;
+      flex-shrink: 0;
+      margin-top: 5px;
+      box-shadow: 0 0 6px currentColor;
+    }
+
+    /* Emotion meters */
+    .emotion-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 5px 0;
+    }
+
+    .emotion-row .em-label {
+      font-size: 0.65rem;
+      color: #5a8a9a;
+      width: 70px;
+      flex-shrink: 0;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .emotion-row .em-track {
+      flex: 1;
+      height: 4px;
+      background: #0a1a2a;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .emotion-row .em-fill {
+      height: 100%;
+      transition: width 0.4s ease;
+      position: relative;
+    }
+
+    .emotion-row .em-fill::after {
+      content: '';
+      position: absolute;
+      right: 0;
+      top: -2px;
+      bottom: -2px;
+      width: 2px;
+      background: inherit;
+      box-shadow: 0 0 8px currentColor;
+    }
+
+    .emotion-row .em-val {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.55rem;
+      color: #5a8a9a;
+      width: 32px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    /* Gender badge */
+    .gender-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      border: 1px solid;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.55rem;
+      letter-spacing: 0.12em;
+      margin-top: 6px;
+    }
+
+    .gender-badge .g-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      animation: dotPulse 1.5s ease-in-out infinite;
+    }
+
+    /* Stress meter */
+    .stress-section {
+      margin-top: 14px;
+      padding: 12px;
+      background: #0a1218;
+      border: 1px solid var(--border);
+      position: relative;
+    }
+    .stress-section::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; bottom: 0;
+      width: 2px;
+    }
+    .stress-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .stress-header h3 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.5rem;
+      font-weight: 500;
+      letter-spacing: 0.2em;
+      color: #4a7a8a;
+      text-transform: uppercase;
+    }
+    .stress-header .stress-value {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 1.1rem;
+      font-weight: 700;
+      transition: color 0.4s;
+    }
+    .stress-header .stress-label-text {
+      font-size: 0.55rem;
+      letter-spacing: 0.12em;
+      transition: color 0.4s;
+    }
+    .stress-bar-track {
+      height: 6px;
+      background: #0a2030;
+      position: relative;
+      overflow: hidden;
+    }
+    .stress-bar-fill {
+      height: 100%;
+      transition: width 0.6s ease, background 0.6s ease;
+      position: relative;
+    }
+    .stress-bar-fill::after {
+      content: '';
+      position: absolute;
+      right: 0;
+      top: -3px;
+      bottom: -3px;
+      width: 2px;
+      background: inherit;
+      box-shadow: 0 0 10px currentColor;
+    }
+    .stress-ticks {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 4px;
+      font-size: 0.45rem;
+      color: #2a4a5a;
+      letter-spacing: 0.05em;
+    }
+    .stress-factors {
+      margin-top: 8px;
+      font-size: 0.6rem;
+      color: #4a6a7a;
+      line-height: 1.5;
+    }
+
+    /* Footer */
+    footer {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      padding: 8px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(0deg, rgba(3,8,16,0.95) 0%, transparent 100%);
+      font-size: 0.55rem;
+      color: #2a4a5a;
+      letter-spacing: 0.08em;
+      pointer-events: none;
+    }
+
+    footer a {
+      color: #3a7a8a;
+      text-decoration: none;
+      pointer-events: all;
+      transition: color 0.2s;
+    }
+
+    footer a:hover {
+      color: var(--cyan);
+      text-shadow: 0 0 10px var(--cyan-dim);
+    }
+
+    /* Custom scrollbar */
+    #panel::-webkit-scrollbar { width: 4px; }
+    #panel::-webkit-scrollbar-track { background: var(--panel-bg); }
+    #panel::-webkit-scrollbar-thumb { background: var(--border); }
+    #panel::-webkit-scrollbar-thumb:hover { background: #1a4a5a; }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      html, body { height: auto; overflow: auto; }
+      #main { flex-direction: column; height: auto; }
+      #panel { width: 100%; max-height: none; overflow-y: visible; }
+      #container { height: 50vh; border-right: none; border-bottom: 1px solid var(--border); }
+      video { height: 100%; }
+      footer { position: relative; }
+    }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <div class="logo">
+      <div class="hex"></div>
+      AI CAMERA
+    </div>
+    <div class="sys-info">
+      <div>SYS.BUILD 7.4.1 // NEURAL ENGINE ACTIVE</div>
+      <div><span class="live">&#9679; LIVE</span> &mdash; FACIAL ANALYSIS MODULE</div>
+    </div>
+  </div>
+  <div id="status">INITIALIZING NEURAL MESH...</div>
+
+  <div id="main">
+    <div id="container">
+      <video id="video" playsinline autoplay muted></video>
+      <canvas id="canvas"></canvas>
+      <div id="hud-overlay"></div>
+      <div class="corner-tl"></div>
+      <div class="corner-tr"></div>
+      <div class="corner-bl"></div>
+      <div class="corner-br"></div>
+      <div class="hud-data top-left" id="hud-tl">FEED::CAM_01<br>RES: 1280x720</div>
+      <div class="hud-data top-right" id="hud-tr">LAT: --ms<br>FPS: --</div>
+      <div class="hud-data bottom-left">MODE: REALTIME<br>BACKEND: WEBGL</div>
+      <div class="hud-data bottom-right" id="hud-br">SUBJECTS: 0<br>CONF: --%</div>
+    </div>
+    <div id="panel">
+      <div class="panel-header">
+        <div class="pulse-dot"></div>
+        <h2>SUBJECT ANALYSIS</h2>
+      </div>
+      <div id="panel-content">
+        <div class="no-face">
+          AWAITING TARGET ACQUISITION<br>
+          <div class="searching">SCANNING...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <span>AI CAMERA v7.4.1 &copy; 2026</span>
+    <span>Powered by <a href="https://github.com/vladmandic/human" target="_blank" rel="noopener">vladmandic/human</a></span>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/human/dist/human.js"></script>
+  <script>
+    const config = {
+      backend: 'webgl',
+      modelBasePath: 'https://cdn.jsdelivr.net/npm/@vladmandic/human/models/',
+      face: {
+        enabled: true,
+        detector: { enabled: true, rotation: false },
+        mesh: { enabled: true },
+        iris: { enabled: false },
+        description: { enabled: true },
+        emotion: { enabled: true },
+      },
+      body: { enabled: false },
+      hand: { enabled: false },
+      gesture: { enabled: false },
+      segmentation: { enabled: false },
+    };
+
+    const human = new Human.Human(config);
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const container = document.getElementById('container');
+    const statusEl = document.getElementById('status');
+    const panelContent = document.getElementById('panel-content');
+    const hudTR = document.getElementById('hud-tr');
+    const hudBR = document.getElementById('hud-br');
+    const hudTL = document.getElementById('hud-tl');
+
+    let lastTime = performance.now();
+    let frameCount = 0;
+    let fps = 0;
+    let lastPanelUpdate = 0;
+    let lastPanelKey = '';
+    const PANEL_UPDATE_INTERVAL = 500;
+
+    // Build a stable key from face data to detect meaningful changes
+    function buildPanelKey(faces) {
+      return faces.map(f => {
+        if (!f.box || f.age === undefined) return '';
+        const age = Math.round(f.age);
+        const gender = f.gender || '';
+        const gs = Math.round((f.genderScore || 0) * 10); // round to 10%
+        const fs = Math.round((f.score || f.boxScore || 0) * 10);
+        const ems = (f.emotion || [])
+          .map(e => `${e.emotion}:${Math.round(e.score * 10)}`) // round to 10%
+          .sort() // stable alphabetical order
+          .join(',');
+        return `${age}|${gender}|${gs}|${fs}|${ems}`;
+      }).join(';;');
+    }
+
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      return new Promise(resolve => { video.onloadeddata = resolve; });
+    }
+
+    function clearOverlays() {
+      container.querySelectorAll('.age-label').forEach(el => el.remove());
+    }
+
+    function getAgeCategory(age) {
+      if (age < 13) return 'JUVENILE';
+      if (age < 20) return 'ADOLESCENT';
+      if (age < 30) return 'YOUNG ADULT';
+      if (age < 45) return 'ADULT';
+      if (age < 60) return 'MATURE';
+      return 'SENIOR';
+    }
+
+    function getAgeReasons(age, gender, genderScore, emotions, faceScore) {
+      const reasons = [];
+
+      if (age < 13) {
+        reasons.push({ color: 'var(--green)', text: 'ROUND FACIAL GEOMETRY // JUVENILE PROPORTIONS' });
+        reasons.push({ color: 'var(--green)', text: 'SMOOTH DERMAL TEXTURE // NO LINE PATTERNS' });
+        reasons.push({ color: 'var(--green)', text: 'HIGH ORBITAL-FACIAL RATIO DETECTED' });
+      } else if (age < 20) {
+        reasons.push({ color: 'var(--green)', text: 'MINIMAL DERMAL TEXTURE VARIATION' });
+        reasons.push({ color: 'var(--green)', text: 'DEVELOPING BONE STRUCTURE // SOFT MANDIBLE' });
+        reasons.push({ color: 'var(--green)', text: 'ZERO WRINKLE MARKERS DETECTED' });
+      } else if (age < 30) {
+        reasons.push({ color: 'var(--cyan)', text: 'DEFINED SKELETAL STRUCTURE // SMOOTH DERMAL LAYER' });
+        reasons.push({ color: 'var(--cyan)', text: 'MINIMAL PERIORBITAL LINES DETECTED' });
+        reasons.push({ color: 'var(--cyan)', text: 'EVEN CHROMATIC DISTRIBUTION // FIRM CONTOURS' });
+      } else if (age < 45) {
+        reasons.push({ color: 'var(--amber)', text: 'MILD EXPRESSION MARKERS // FRONTAL + PERIORBITAL' });
+        reasons.push({ color: 'var(--amber)', text: 'DERMAL TEXTURE SHIFT DETECTED' });
+        reasons.push({ color: 'var(--amber)', text: 'MATURE PROPORTIONS // DEFINED CONTOUR MAPPING' });
+      } else if (age < 60) {
+        reasons.push({ color: 'var(--amber)', text: 'VISIBLE PERIORBITAL + PERIORAL CREASING' });
+        reasons.push({ color: 'var(--amber)', text: 'REDUCED ELASTICITY INDEX IN MESH ANALYSIS' });
+        reasons.push({ color: 'var(--amber)', text: 'DEEP NASOLABIAL FOLD GEOMETRY' });
+      } else {
+        reasons.push({ color: 'var(--red)', text: 'PRONOUNCED WRINKLE TOPOLOGY ACROSS FACE MAP' });
+        reasons.push({ color: 'var(--red)', text: 'SIGNIFICANT TEXTURE ENTROPY DETECTED' });
+        reasons.push({ color: 'var(--red)', text: 'VOLUME LOSS + DERMAL LAXITY INDICATORS' });
+      }
+
+      if (gender && genderScore > 0.5) {
+        reasons.push({
+          color: 'var(--magenta)',
+          text: `GENDER SIGNAL: ${gender.toUpperCase()} @ ${Math.round(genderScore * 100)}% // ADJUSTS AGE BASELINE`
+        });
+      }
+
+      if (faceScore) {
+        reasons.push({
+          color: '#5a8a9a',
+          text: `DETECTION CONFIDENCE: ${Math.round(faceScore * 100)}% // NEURAL MESH LOCK`
+        });
+      }
+
+      return reasons;
+    }
+
+    function getEmotionColor(emotion) {
+      const colors = {
+        happy: 'var(--green)', sad: '#4488ff', angry: 'var(--red)',
+        surprise: 'var(--amber)', fear: 'var(--magenta)', disgust: '#ff6644',
+        neutral: '#5a8a9a', contempt: '#8a6a5a'
+      };
+      return colors[emotion] || '#5a8a9a';
+    }
+
+    // Persistent DOM references for in-place updates
+    let panelState = { mode: 'none', faceCount: 0, els: {} };
+
+    // Fixed list of emotions we always show (alphabetical, stable order)
+    const EMOTION_SLOTS = ['happy', 'neutral', 'sad', 'surprise'];
+
+    function ensurePanelStructure(faceCount) {
+      // Only rebuild DOM when the number of faces changes
+      if (panelState.mode === 'faces' && panelState.faceCount === faceCount) return;
+
+      panelState = { mode: 'faces', faceCount, els: { faces: [] } };
+      panelContent.innerHTML = '';
+
+      for (let i = 0; i < faceCount; i++) {
+        const card = document.createElement('div');
+        card.className = 'face-card';
+
+        card.innerHTML = `
+          <div class="face-id">
+            <span class="fi-label">SUBJECT ${faceCount > 1 ? String(i + 1).padStart(2, '0') : '01'}</span>
+            <span class="conf fi-conf"></span>
+          </div>
+          <div class="age-display">
+            <span class="age-num fi-age"></span>
+            <span class="age-unit">EST. YEARS</span>
+            <span class="age-category fi-category"></span>
+          </div>
+          <div class="age-range-bar">
+            <div class="age-range-track"></div>
+            <div class="age-range-fill fi-range-fill"></div>
+            <div class="age-range-marker fi-range-marker"></div>
+          </div>
+          <div class="age-range-labels"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+          <div class="gender-badge fi-gender" style="display:none">
+            <span class="g-dot fi-gdot"></span>
+            <span class="fi-glabel"></span>
+          </div>
+          <div class="section-hdr"><h3>ANALYSIS FACTORS</h3><div class="line"></div></div>
+          <ul class="reason-list fi-reasons"></ul>
+          <div class="section-hdr"><h3>EMOTIONAL STATE</h3><div class="line"></div></div>
+          <div class="fi-emotions"></div>
+          <div class="stress-section fi-stress">
+            <div class="stress-header">
+              <h3>STRESS INDEX</h3>
+              <div>
+                <span class="stress-value fi-stress-val">0%</span>
+                <span class="stress-label-text fi-stress-label">LOW</span>
+              </div>
+            </div>
+            <div class="stress-bar-track">
+              <div class="stress-bar-fill fi-stress-fill" style="width:0%"></div>
+            </div>
+            <div class="stress-ticks">
+              <span>RELAXED</span><span>MILD</span><span>MODERATE</span><span>HIGH</span><span>SEVERE</span>
+            </div>
+            <div class="stress-factors fi-stress-factors"></div>
+          </div>
+        `;
+
+        // Pre-create emotion rows
+        const emotionsContainer = card.querySelector('.fi-emotions');
+        const emEls = {};
+        for (const name of EMOTION_SLOTS) {
+          const row = document.createElement('div');
+          row.className = 'emotion-row';
+          const col = getEmotionColor(name);
+          row.innerHTML = `
+            <span class="em-label">${name}</span>
+            <div class="em-track"><div class="em-fill" style="width:0%;background:${col}"></div></div>
+            <span class="em-val">0%</span>
+          `;
+          emotionsContainer.appendChild(row);
+          emEls[name] = {
+            fill: row.querySelector('.em-fill'),
+            val: row.querySelector('.em-val')
+          };
+        }
+
+        panelContent.appendChild(card);
+
+        panelState.els.faces.push({
+          conf: card.querySelector('.fi-conf'),
+          age: card.querySelector('.fi-age'),
+          category: card.querySelector('.fi-category'),
+          rangeFill: card.querySelector('.fi-range-fill'),
+          rangeMarker: card.querySelector('.fi-range-marker'),
+          genderBadge: card.querySelector('.fi-gender'),
+          gDot: card.querySelector('.fi-gdot'),
+          gLabel: card.querySelector('.fi-glabel'),
+          reasons: card.querySelector('.fi-reasons'),
+          emotions: emEls,
+          stressSection: card.querySelector('.fi-stress'),
+          stressVal: card.querySelector('.fi-stress-val'),
+          stressLabel: card.querySelector('.fi-stress-label'),
+          stressFill: card.querySelector('.fi-stress-fill'),
+          stressFactors: card.querySelector('.fi-stress-factors'),
+          lastAge: -1,
+          lastReasonKey: ''
+        });
+      }
+    }
+
+    function showNoFace() {
+      if (panelState.mode === 'noface') return;
+      panelState = { mode: 'noface', faceCount: 0, els: {} };
+      panelContent.innerHTML = `<div class="no-face">AWAITING TARGET ACQUISITION<br><div class="searching">SCANNING...</div></div>`;
+    }
+
+    function updatePanel(faces) {
+      const validFaces = faces.filter(f => f.box && f.age !== undefined);
+
+      if (!validFaces.length) {
+        showNoFace();
+        return;
+      }
+
+      ensurePanelStructure(validFaces.length);
+
+      validFaces.forEach((face, i) => {
+        const els = panelState.els.faces[i];
+        const age = Math.round(face.age);
+        const gender = face.gender || '';
+        const genderScore = face.genderScore || 0;
+        const faceScore = face.score || face.boxScore || 0;
+        const emotions = face.emotion || [];
+
+        // Update confidence
+        els.conf.textContent = Math.round(faceScore * 100) + '%';
+
+        // Update age number
+        els.age.textContent = age;
+        els.category.textContent = getAgeCategory(age);
+
+        // Update range bar
+        const ageMin = Math.max(0, age - 3);
+        const ageMax = age + 3;
+        els.rangeFill.style.left = (ageMin) + '%';
+        els.rangeFill.style.width = (ageMax - ageMin) + '%';
+        els.rangeMarker.style.left = `calc(${age}% - 6px)`;
+
+        // Update gender badge
+        if (gender) {
+          const gColor = gender === 'male' ? 'var(--cyan)' : 'var(--magenta)';
+          els.genderBadge.style.display = '';
+          els.genderBadge.style.borderColor = gColor;
+          els.genderBadge.style.color = gColor;
+          els.gDot.style.background = gColor;
+          els.gDot.style.boxShadow = `0 0 6px ${gColor}`;
+          els.gLabel.textContent = `${gender.toUpperCase()} // ${Math.round(genderScore * 100)}%`;
+        } else {
+          els.genderBadge.style.display = 'none';
+        }
+
+        // Update reasons only when age bracket changes
+        const reasonKey = getAgeCategory(age) + '|' + gender + '|' + Math.round(faceScore * 10);
+        if (reasonKey !== els.lastReasonKey) {
+          els.lastReasonKey = reasonKey;
+          const reasons = getAgeReasons(age, gender, genderScore, emotions, faceScore);
+          els.reasons.innerHTML = reasons.map(r =>
+            `<li><span class="indicator" style="background:${r.color};color:${r.color}"></span>${r.text}</li>`
+          ).join('');
+        }
+
+        // Update emotion bars in place (no DOM rebuild)
+        const emotionMap = {};
+        for (const em of emotions) {
+          emotionMap[em.emotion] = Math.round(em.score * 100);
+        }
+        for (const name of EMOTION_SLOTS) {
+          const pct = emotionMap[name] || 0;
+          els.emotions[name].fill.style.width = pct + '%';
+          els.emotions[name].val.textContent = pct + '%';
+        }
+
+        // Compute stress index from negative emotions
+        const angry = emotionMap['angry'] || 0;
+        const fear = emotionMap['fear'] || 0;
+        const sad = emotionMap['sad'] || 0;
+        const disgust = emotionMap['disgust'] || 0;
+        const contempt = emotionMap['contempt'] || 0;
+        const happy = emotionMap['happy'] || 0;
+        const neutral = emotionMap['neutral'] || 0;
+
+        // Weighted composite: fear and angry weigh more
+        const rawStress = (angry * 0.3) + (fear * 0.3) + (sad * 0.15) + (disgust * 0.15) + (contempt * 0.1);
+        // Dampen if happy/neutral are dominant
+        const calmFactor = Math.max(0, 1 - ((happy + neutral) / 200));
+        const stress = Math.min(100, Math.round(rawStress * (1 + calmFactor)));
+
+        let stressColor, stressLabelText;
+        if (stress < 15) { stressColor = 'var(--green)'; stressLabelText = 'LOW'; }
+        else if (stress < 35) { stressColor = 'var(--cyan)'; stressLabelText = 'MILD'; }
+        else if (stress < 55) { stressColor = 'var(--amber)'; stressLabelText = 'MODERATE'; }
+        else if (stress < 75) { stressColor = '#ff6644'; stressLabelText = 'HIGH'; }
+        else { stressColor = 'var(--red)'; stressLabelText = 'SEVERE'; }
+
+        els.stressVal.textContent = stress + '%';
+        els.stressVal.style.color = stressColor;
+        els.stressLabel.textContent = stressLabelText;
+        els.stressLabel.style.color = stressColor;
+        els.stressFill.style.width = stress + '%';
+        els.stressFill.style.background = stressColor;
+        els.stressSection.style.borderColor = stressColor;
+        els.stressSection.style.borderLeftWidth = '2px';
+        els.stressSection.style.borderLeftStyle = 'solid';
+        els.stressSection.style.borderLeftColor = stressColor;
+
+        // Show contributing factors
+        const factors = [];
+        if (angry > 10) factors.push(`ANGER:${angry}%`);
+        if (fear > 10) factors.push(`FEAR:${fear}%`);
+        if (sad > 10) factors.push(`SADNESS:${sad}%`);
+        if (disgust > 10) factors.push(`DISGUST:${disgust}%`);
+        if (contempt > 10) factors.push(`CONTEMPT:${contempt}%`);
+        if (!factors.length) factors.push('NO SIGNIFICANT STRESS MARKERS');
+        els.stressFactors.textContent = factors.join(' // ');
+      });
+    }
+
+    function drawReticle(ctx, x, y, w, h) {
+      const len = Math.min(w, h) * 0.2;
+      const gap = 3;
+
+      ctx.strokeStyle = '#00f0ff';
+      ctx.lineWidth = 2;
+      ctx.shadowColor = '#00f0ff';
+      ctx.shadowBlur = 8;
+
+      // Top-left corner
+      ctx.beginPath();
+      ctx.moveTo(x - gap, y + len);
+      ctx.lineTo(x - gap, y - gap);
+      ctx.lineTo(x + len, y - gap);
+      ctx.stroke();
+
+      // Top-right corner
+      ctx.beginPath();
+      ctx.moveTo(x + w - len, y - gap);
+      ctx.lineTo(x + w + gap, y - gap);
+      ctx.lineTo(x + w + gap, y + len);
+      ctx.stroke();
+
+      // Bottom-left corner
+      ctx.beginPath();
+      ctx.moveTo(x - gap, y + h - len);
+      ctx.lineTo(x - gap, y + h + gap);
+      ctx.lineTo(x + len, y + h + gap);
+      ctx.stroke();
+
+      // Bottom-right corner
+      ctx.beginPath();
+      ctx.moveTo(x + w - len, y + h + gap);
+      ctx.lineTo(x + w + gap, y + h + gap);
+      ctx.lineTo(x + w + gap, y + h - len);
+      ctx.stroke();
+
+      // Cross-hair center lines (subtle)
+      const cx = x + w / 2;
+      const cy = y + h / 2;
+      ctx.strokeStyle = '#00f0ff33';
+      ctx.lineWidth = 1;
+      ctx.shadowBlur = 0;
+      ctx.setLineDash([4, 8]);
+
+      ctx.beginPath();
+      ctx.moveTo(x + len, cy);
+      ctx.lineTo(x + w - len, cy);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(cx, y + len);
+      ctx.lineTo(cx, y + h - len);
+      ctx.stroke();
+
+      ctx.setLineDash([]);
+
+      // Small diamond at center
+      ctx.strokeStyle = '#00f0ff66';
+      ctx.lineWidth = 1;
+      const ds = 4;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - ds);
+      ctx.lineTo(cx + ds, cy);
+      ctx.lineTo(cx, cy + ds);
+      ctx.lineTo(cx - ds, cy);
+      ctx.closePath();
+      ctx.stroke();
+
+      ctx.shadowBlur = 0;
+    }
+
+    function drawResults(result) {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const cw = video.clientWidth;
+      const ch = video.clientHeight;
+
+      // Only resize canvas when dimensions actually change
+      if (canvas.width !== vw || canvas.height !== vh) {
+        canvas.width = vw;
+        canvas.height = vh;
+        canvas.style.width = cw + 'px';
+        canvas.style.height = ch + 'px';
+      }
+
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, vw, vh);
+
+      clearOverlays();
+
+      const scaleX = video.clientWidth / video.videoWidth;
+      const scaleY = video.clientHeight / video.videoHeight;
+
+      // Update HUD corner data (only when changed)
+      const tlText = `FEED::CAM_01<br>RES: ${vw}x${vh}`;
+      const brText = `SUBJECTS: ${result.face.length}<br>CONF: ${result.face.length ? Math.round((result.face[0].score || 0) * 100) : '--'}%`;
+      if (hudTL.innerHTML !== tlText) hudTL.innerHTML = tlText;
+      if (hudBR.innerHTML !== brText) hudBR.innerHTML = brText;
+
+      for (const face of result.face) {
+        if (!face.box || face.age === undefined) continue;
+
+        const [x, y, w, h] = face.box;
+
+        // Draw targeting reticle instead of simple box
+        drawReticle(ctx, x, y, w, h);
+
+        // Age label overlay with HUD styling
+        const label = document.createElement('div');
+        label.className = 'age-label';
+        const age = Math.round(face.age);
+        const gender = face.gender || '';
+
+        label.innerHTML = `<div class="age-label-inner">
+          <div class="tag-line">SUBJECT AGE</div>
+          <div class="age-value">${age}</div>
+          ${gender ? `<div class="gender-tag">${gender.toUpperCase()}</div>` : ''}
+        </div>`;
+
+        const lx = Math.max(4, (x * scaleX) - 130);
+        const ly = Math.max(4, (y * scaleY));
+        label.style.left = lx + 'px';
+        label.style.top = ly + 'px';
+        container.appendChild(label);
+      }
+
+      const now = performance.now();
+      if (now - lastPanelUpdate > PANEL_UPDATE_INTERVAL) {
+        updatePanel(result.face);
+        lastPanelUpdate = now;
+      }
+    }
+
+    async function detectLoop() {
+      const t0 = performance.now();
+      const result = await human.detect(video);
+      const latency = Math.round(performance.now() - t0);
+
+      frameCount++;
+      if (performance.now() - lastTime > 1000) {
+        fps = frameCount;
+        frameCount = 0;
+        lastTime = performance.now();
+      }
+
+      const trText = `LAT: ${latency}ms<br>FPS: ${fps}`;
+      if (hudTR.innerHTML !== trText) hudTR.innerHTML = trText;
+
+      const faces = result.face.length;
+      const statusText = faces
+        ? `TRACKING ${faces} SUBJECT${faces > 1 ? 'S' : ''} // NEURAL MESH ACTIVE`
+        : 'SCANNING FOR SUBJECTS // NO TARGET ACQUIRED';
+      if (statusEl.textContent !== statusText) statusEl.textContent = statusText;
+
+      drawResults(result);
+      requestAnimationFrame(detectLoop);
+    }
+
+    async function main() {
+      statusEl.textContent = 'LOADING NEURAL MESH...';
+      await human.load();
+      statusEl.textContent = 'CALIBRATING DETECTION ENGINE...';
+      await human.warmup();
+      statusEl.textContent = 'INITIALIZING CAMERA FEED...';
+      await startCamera();
+      statusEl.textContent = 'SYSTEM ONLINE // SCANNING...';
+      detectLoop();
+    }
+
+    main().catch(err => {
+      statusEl.textContent = 'SYSTEM ERROR: ' + err.message;
+      console.error(err);
+    });
+  </script>
+</body>
+</html>
