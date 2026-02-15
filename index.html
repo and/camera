@@ -837,12 +837,25 @@
     }
 
     async function startCamera() {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
-      video.srcObject = stream;
-      return new Promise(resolve => { video.onloadeddata = resolve; });
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Camera API not available. HTTPS is required on mobile devices.');
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        video.srcObject = stream;
+        return new Promise(resolve => { video.onloadeddata = resolve; });
+      } catch (err) {
+        if (err.name === 'NotAllowedError') {
+          throw new Error('Camera permission denied. Please allow camera access and reload.');
+        }
+        if (err.name === 'NotFoundError') {
+          throw new Error('No camera found on this device.');
+        }
+        throw new Error('Camera error: ' + err.message + (location.protocol === 'http:' ? ' — Try HTTPS.' : ''));
+      }
     }
 
     function clearOverlays() {
@@ -1304,6 +1317,11 @@
 
     main().catch(err => {
       statusEl.textContent = 'SYSTEM ERROR: ' + err.message;
+      statusEl.style.color = 'var(--red)';
+      panelContent.innerHTML = `<div class="no-face" style="color:var(--red)">
+        SYSTEM ERROR<br><br>
+        <span style="color:#7aacbc;font-size:0.65rem">${err.message}</span>
+      </div>`;
       console.error(err);
     });
   </script>
