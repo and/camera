@@ -691,6 +691,32 @@
       line-height: 1.5;
     }
 
+    /* Camera switch button */
+    #cam-switch {
+      position: absolute;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      background: rgba(0, 15, 25, 0.8);
+      border: 1px solid var(--cyan-dim);
+      color: var(--cyan);
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.55rem;
+      letter-spacing: 0.15em;
+      padding: 6px 16px;
+      cursor: pointer;
+      backdrop-filter: blur(8px);
+      transition: background 0.2s, border-color 0.2s;
+    }
+    #cam-switch:hover {
+      background: rgba(0, 240, 255, 0.1);
+      border-color: var(--cyan);
+    }
+    #cam-switch:active {
+      background: rgba(0, 240, 255, 0.2);
+    }
+
     /* Footer */
     footer {
       position: fixed;
@@ -772,6 +798,7 @@
       <div class="corner-br"></div>
       <div class="hud-data top-left" id="hud-tl">FEED::CAM_01<br>RES: 1280x720</div>
       <div class="hud-data top-right" id="hud-tr">LAT: --ms<br>FPS: --</div>
+      <button id="cam-switch">SWITCH CAMERA</button>
       <div class="hud-data bottom-left">MODE: REALTIME<br>BACKEND: WEBGL</div>
       <div class="hud-data bottom-right" id="hud-br">SUBJECTS: 0<br>CONF: --%</div>
     </div>
@@ -823,6 +850,8 @@
     const hudBR = document.getElementById('hud-br');
     const hudTL = document.getElementById('hud-tl');
 
+    let facingMode = 'user';
+
     let lastTime = performance.now();
     let frameCount = 0;
     let fps = 0;
@@ -852,7 +881,7 @@
       }
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: { facingMode: facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: false,
         });
         video.srcObject = stream;
@@ -1324,6 +1353,19 @@
       statusEl.textContent = 'SYSTEM ONLINE // SCANNING...';
       detectLoop();
     }
+
+    document.getElementById('cam-switch').addEventListener('click', async () => {
+      facingMode = facingMode === 'user' ? 'environment' : 'user';
+      // Stop current stream
+      const tracks = video.srcObject?.getTracks();
+      if (tracks) tracks.forEach(t => t.stop());
+      try {
+        await startCamera();
+      } catch (err) {
+        statusEl.textContent = 'CAMERA SWITCH FAILED: ' + err.message;
+        statusEl.style.color = 'var(--red)';
+      }
+    });
 
     main().catch(err => {
       statusEl.textContent = 'SYSTEM ERROR: ' + err.message;
