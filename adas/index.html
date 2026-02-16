@@ -833,6 +833,19 @@
         </div>
       </div>
 
+      <div class="section-hdr"><h3>LANE DEPARTURE</h3><div class="line"></div></div>
+      <div class="toggle-row">
+        <span class="toggle-label">LANE DETECTION</span>
+        <div class="toggle-switch" id="lane-toggle"></div>
+      </div>
+      <div class="lane-section" id="lane-section">
+        <div class="driver-status">
+          <div class="driver-dot" id="lane-dot"></div>
+          <span class="driver-text" id="lane-text">DISABLED</span>
+        </div>
+        <div class="driver-timer" id="lane-info">--</div>
+      </div>
+
       <div class="section-hdr"><h3>DRIVER MONITOR</h3><div class="line"></div></div>
       <div class="toggle-row">
         <span class="toggle-label">DROWSINESS CHECK</span>
@@ -914,6 +927,15 @@
     let prevDetections = [];
     let prevFrameTime = 0;
 
+    // Lane detection
+    let laneDetectionEnabled = localStorage.getItem('adas_lane_detection') === 'true';
+    let laneState = { left: null, right: null, departure: 'none', confidence: 0 };
+    let lastLaneSpeechTime = 0;
+    const LANE_SPEECH_COOLDOWN = 4000;
+    // Offscreen canvas for lane processing
+    const laneCanvas = document.createElement('canvas');
+    const laneCtx = laneCanvas.getContext('2d', { willReadFrequently: true });
+
     // Driver monitoring
     let driverMonitorEnabled = localStorage.getItem('adas_driver_monitor') === 'true';
     let driverCheckTimer = null;
@@ -957,6 +979,10 @@
     const drowsinessOverlay = document.getElementById('drowsiness-overlay');
     const sensitivityBtn = document.getElementById('sensitivity-btn');
     const driverToggle = document.getElementById('driver-toggle');
+    const laneToggle = document.getElementById('lane-toggle');
+    const laneDot = document.getElementById('lane-dot');
+    const laneTextEl = document.getElementById('lane-text');
+    const laneInfoEl = document.getElementById('lane-info');
 
     // Offscreen canvas for downscaled inference
     const offCanvas = document.createElement('canvas');
@@ -1277,6 +1303,9 @@
         ctx.lineWidth = 1;
       }
 
+      // Draw lane overlay on top
+      drawLaneOverlay(ctx, videoW, videoH);
+
       // Store for next frame's closing-rate calc
       prevDetections = detections.map(d => ({
         class: d.class,
@@ -1350,6 +1379,311 @@
       );
     }
 
+    // ===== LANE DETECTION =====
+    const LANE_W = 160;
+    const LANE_H = 120;
+
+    function detectLanes(videoEl) {
+      if (!laneDetectionEnabled) return;
+
+      const vw = videoEl.videoWidth;
+      const vh = videoEl.videoHeight;
+      if (!vw || !vh) return;
+
+      laneCanvas.width = LANE_W;
+      laneCanvas.height = LANE_H;
+
+      // Only process lower 40% of frame (road surface)
+      const cropTop = vh * 0.6;
+      const cropH = vh * 0.4;
+      laneCtx.drawImage(videoEl, 0, cropTop, vw, cropH, 0, 0, LANE_W, LANE_H);
+
+      const imageData = laneCtx.getImageData(0, 0, LANE_W, LANE_H);
+      const data = imageData.data;
+      const gray = new Float32Array(LANE_W * LANE_H);
+
+      // Grayscale
+      for (let i = 0; i < gray.length; i++) {
+        const j = i * 4;
+        gray[i] = data[j] * 0.299 + data[j + 1] * 0.587 + data[j + 2] * 0.114;
+      }
+
+      // Sobel edge detection (horizontal gradient — catches vertical/diagonal lines)
+      const edges = new Float32Array(LANE_W * LANE_H);
+      for (let y = 1; y < LANE_H - 1; y++) {
+        for (let x = 1; x < LANE_W - 1; x++) {
+          const idx = y * LANE_W + x;
+          // Sobel X kernel
+          const gx = -gray[(y - 1) * LANE_W + (x - 1)] + gray[(y - 1) * LANE_W + (x + 1)]
+                   - 2 * gray[y * LANE_W + (x - 1)]     + 2 * gray[y * LANE_W + (x + 1)]
+                   - gray[(y + 1) * LANE_W + (x - 1)]    + gray[(y + 1) * LANE_W + (x + 1)];
+          // Sobel Y kernel
+          const gy = -gray[(y - 1) * LANE_W + (x - 1)] - 2 * gray[(y - 1) * LANE_W + x] - gray[(y - 1) * LANE_W + (x + 1)]
+                   + gray[(y + 1) * LANE_W + (x - 1)]  + 2 * gray[(y + 1) * LANE_W + x] + gray[(y + 1) * LANE_W + (x + 1)];
+          edges[idx] = Math.sqrt(gx * gx + gy * gy);
+        }
+      }
+
+      // Threshold edges — adaptive based on mean
+      let edgeSum = 0;
+      for (let i = 0; i < edges.length; i++) edgeSum += edges[i];
+      const edgeMean = edgeSum / edges.length;
+      const threshold = Math.max(edgeMean * 2.5, 40);
+
+      // Collect strong edge points
+      const leftPoints = [];  // left half
+      const rightPoints = []; // right half
+      const midX = LANE_W / 2;
+
+      for (let y = 2; y < LANE_H - 2; y++) {
+        for (let x = 2; x < LANE_W - 2; x++) {
+          if (edges[y * LANE_W + x] < threshold) continue;
+
+          // Check if this is a bright point (lane markings are typically white/yellow)
+          const brightness = gray[y * LANE_W + x];
+          if (brightness < 100) continue;
+
+          if (x < midX) {
+            leftPoints.push({ x, y });
+          } else {
+            rightPoints.push({ x, y });
+          }
+        }
+      }
+
+      // Fit lines using RANSAC-lite (simple least-squares with outlier rejection)
+      const leftLine = fitLaneLine(leftPoints, LANE_W, LANE_H);
+      const rightLine = fitLaneLine(rightPoints, LANE_W, LANE_H);
+
+      // Smooth with previous detections
+      if (leftLine) {
+        laneState.left = laneState.left
+          ? { m: laneState.left.m * 0.6 + leftLine.m * 0.4, b: laneState.left.b * 0.6 + leftLine.b * 0.4 }
+          : leftLine;
+      } else if (laneState.left) {
+        laneState.left.confidence = (laneState.left.confidence || 1) - 0.15;
+        if (laneState.left.confidence <= 0) laneState.left = null;
+      }
+
+      if (rightLine) {
+        laneState.right = laneState.right
+          ? { m: laneState.right.m * 0.6 + rightLine.m * 0.4, b: laneState.right.b * 0.6 + rightLine.b * 0.4 }
+          : rightLine;
+      } else if (laneState.right) {
+        laneState.right.confidence = (laneState.right.confidence || 1) - 0.15;
+        if (laneState.right.confidence <= 0) laneState.right = null;
+      }
+
+      // Detect departure
+      checkLaneDeparture();
+    }
+
+    function fitLaneLine(points, w, h) {
+      if (points.length < 8) return null;
+
+      // Simple least-squares: y = mx + b
+      let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+      const n = points.length;
+      for (const p of points) {
+        sumX += p.x; sumY += p.y;
+        sumXY += p.x * p.y; sumXX += p.x * p.x;
+      }
+      const denom = n * sumXX - sumX * sumX;
+      if (Math.abs(denom) < 0.001) return null;
+
+      const m = (n * sumXY - sumX * sumY) / denom;
+      const b = (sumY - m * sumX) / n;
+
+      // Reject near-horizontal lines (lane lines should be somewhat vertical)
+      if (Math.abs(m) < 0.3) return null;
+
+      // Check fit quality — calculate R-squared
+      const meanY = sumY / n;
+      let ssTot = 0, ssRes = 0;
+      for (const p of points) {
+        const predicted = m * p.x + b;
+        ssRes += (p.y - predicted) ** 2;
+        ssTot += (p.y - meanY) ** 2;
+      }
+      const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0;
+      if (r2 < 0.15) return null;
+
+      return { m, b, confidence: Math.min(1, r2 + 0.2), points: n };
+    }
+
+    function checkLaneDeparture() {
+      const midX = LANE_W / 2;
+      let departure = 'none';
+
+      if (laneState.left && laneState.right) {
+        // Find where each lane line is at bottom of ROI
+        const bottomY = LANE_H;
+        const leftX = (bottomY - laneState.left.b) / laneState.left.m;
+        const rightX = (bottomY - laneState.right.b) / laneState.right.m;
+        const laneCenter = (leftX + rightX) / 2;
+        const laneWidth = Math.abs(rightX - leftX);
+
+        if (laneWidth > 10) { // sanity check
+          const offset = (midX - laneCenter) / laneWidth;
+          if (offset > 0.35) {
+            departure = 'left';
+          } else if (offset < -0.35) {
+            departure = 'right';
+          } else {
+            departure = 'centered';
+          }
+        }
+        laneState.confidence = Math.min(laneState.left.confidence || 0, laneState.right.confidence || 0);
+      } else if (laneState.left || laneState.right) {
+        // Only one line — weaker signal
+        const line = laneState.left || laneState.right;
+        const bottomX = (LANE_H - line.b) / line.m;
+
+        if (laneState.left && bottomX > midX * 0.8) {
+          departure = 'left'; // left line moved too far right
+        } else if (laneState.right && bottomX < midX * 1.2) {
+          departure = 'right'; // right line moved too far left
+        } else {
+          departure = 'partial';
+        }
+        laneState.confidence = (line.confidence || 0) * 0.6;
+      } else {
+        laneState.confidence = 0;
+      }
+
+      laneState.departure = departure;
+
+      // Update panel
+      updateLaneUI();
+
+      // Speech alert for departure
+      if ((departure === 'left' || departure === 'right') && laneState.confidence > 0.3) {
+        const now = performance.now();
+        if (now - lastLaneSpeechTime > LANE_SPEECH_COOLDOWN) {
+          lastLaneSpeechTime = now;
+          speak(`Lane departure ${departure}!`, 'high');
+          playBeep(700, 100);
+          if (navigator.vibrate) navigator.vibrate([150, 100, 150]);
+        }
+      }
+    }
+
+    function updateLaneUI() {
+      if (!laneDetectionEnabled) {
+        laneTextEl.textContent = 'DISABLED';
+        laneTextEl.style.color = '#3a6a7a';
+        laneDot.style.background = '#3a6a7a';
+        laneDot.style.boxShadow = 'none';
+        laneInfoEl.textContent = '--';
+        return;
+      }
+
+      const dep = laneState.departure;
+      const conf = Math.round(laneState.confidence * 100);
+
+      if (dep === 'left' || dep === 'right') {
+        laneTextEl.textContent = `DEPARTURE ${dep.toUpperCase()}`;
+        laneTextEl.style.color = 'var(--red)';
+        laneDot.style.background = 'var(--red)';
+        laneDot.style.boxShadow = '0 0 8px var(--red)';
+      } else if (dep === 'centered') {
+        laneTextEl.textContent = 'CENTERED';
+        laneTextEl.style.color = 'var(--green)';
+        laneDot.style.background = 'var(--green)';
+        laneDot.style.boxShadow = '0 0 8px var(--green)';
+      } else if (dep === 'partial') {
+        laneTextEl.textContent = 'PARTIAL DETECT';
+        laneTextEl.style.color = 'var(--amber)';
+        laneDot.style.background = 'var(--amber)';
+        laneDot.style.boxShadow = '0 0 8px var(--amber)';
+      } else {
+        laneTextEl.textContent = 'NO LANES';
+        laneTextEl.style.color = '#5a8a9a';
+        laneDot.style.background = '#5a8a9a';
+        laneDot.style.boxShadow = 'none';
+      }
+
+      laneInfoEl.textContent = conf > 0 ? `CONFIDENCE: ${conf}%` : 'SCANNING...';
+    }
+
+    function drawLaneOverlay(ctx, videoW, videoH) {
+      if (!laneDetectionEnabled) return;
+      if (!laneState.left && !laneState.right) return;
+
+      const cropTop = videoH * 0.6;
+      const scaleX = videoW / LANE_W;
+      const scaleY = (videoH * 0.4) / LANE_H;
+
+      function laneToVideo(lx, ly) {
+        return { x: lx * scaleX, y: ly * scaleY + cropTop };
+      }
+
+      ctx.save();
+
+      // Draw lane lines
+      const lines = [];
+      if (laneState.left) lines.push({ line: laneState.left, side: 'left' });
+      if (laneState.right) lines.push({ line: laneState.right, side: 'right' });
+
+      for (const { line, side } of lines) {
+        const topY = 0;
+        const botY = LANE_H;
+        const topX = (topY - line.b) / line.m;
+        const botX = (botY - line.b) / line.m;
+
+        const p1 = laneToVideo(topX, topY);
+        const p2 = laneToVideo(botX, botY);
+
+        const dep = laneState.departure;
+        let color;
+        if ((dep === 'left' && side === 'left') || (dep === 'right' && side === 'right')) {
+          color = '#ff3344'; // departing side
+        } else if (dep === 'centered') {
+          color = '#00ff88';
+        } else {
+          color = '#00f0ff';
+        }
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 10;
+        ctx.setLineDash([12, 8]);
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+      }
+
+      // Draw filled lane area if both lines detected
+      if (laneState.left && laneState.right) {
+        const lt = laneToVideo((0 - laneState.left.b) / laneState.left.m, 0);
+        const lb = laneToVideo((LANE_H - laneState.left.b) / laneState.left.m, LANE_H);
+        const rt = laneToVideo((0 - laneState.right.b) / laneState.right.m, 0);
+        const rb = laneToVideo((LANE_H - laneState.right.b) / laneState.right.m, LANE_H);
+
+        const dep = laneState.departure;
+        const fillColor = dep === 'left' || dep === 'right'
+          ? 'rgba(255,51,68,0.08)'
+          : 'rgba(0,240,255,0.06)';
+
+        ctx.fillStyle = fillColor;
+        ctx.setLineDash([]);
+        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        ctx.moveTo(lt.x, lt.y);
+        ctx.lineTo(lb.x, lb.y);
+        ctx.lineTo(rb.x, rb.y);
+        ctx.lineTo(rt.x, rt.y);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      ctx.setLineDash([]);
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
+
     // ===== ADAS DETECTION LOOP =====
     async function adasDetectLoop() {
       if (!isRunning || isDriverCheck) {
@@ -1403,6 +1737,9 @@
 
       const videoW = video.videoWidth;
       const videoH = video.videoHeight;
+
+      // Lane detection (runs on raw video, not offscreen)
+      detectLanes(video);
 
       // Draw + score
       const { maxDanger, scoredDets } = drawDetections(roadDets, videoW, videoH);
@@ -1607,6 +1944,28 @@
       }
     }
 
+    // ===== LANE TOGGLE =====
+    function updateLaneToggleUI() {
+      if (laneDetectionEnabled) {
+        laneToggle.classList.add('active');
+        laneTextEl.textContent = 'SCANNING...';
+        laneTextEl.style.color = 'var(--amber)';
+        laneDot.style.background = 'var(--amber)';
+        laneDot.style.boxShadow = '0 0 8px var(--amber)';
+        laneInfoEl.textContent = 'SCANNING...';
+      } else {
+        laneToggle.classList.remove('active');
+        laneState = { left: null, right: null, departure: 'none', confidence: 0 };
+        updateLaneUI();
+      }
+    }
+
+    laneToggle.addEventListener('click', () => {
+      laneDetectionEnabled = !laneDetectionEnabled;
+      localStorage.setItem('adas_lane_detection', laneDetectionEnabled);
+      updateLaneToggleUI();
+    });
+
     // ===== DRIVER TOGGLE =====
     driverToggle.addEventListener('click', async () => {
       driverMonitorEnabled = !driverMonitorEnabled;
@@ -1691,6 +2050,7 @@
         applyRotation();
       }
       updateDriverToggleUI();
+      updateLaneToggleUI();
     }
 
     // ===== START =====
