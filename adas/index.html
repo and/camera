@@ -1084,7 +1084,7 @@
     let lastSpokenZone = 'green';
 
     // Minimum intervals between speech by zone
-    const SPEECH_INTERVALS = { green: 0, yellow: 4000, orange: 2500, red: 1500 };
+    const SPEECH_INTERVALS = { green: 5000, yellow: 3500, orange: 2500, red: 1500 };
 
     function speak(text, urgency) {
       if (!('speechSynthesis' in window)) return;
@@ -1105,83 +1105,61 @@
       window.speechSynthesis.speak(utterance);
     }
 
-    function buildAlertMessage(zone, scoredDets) {
+    // Track what was last spoken to avoid repeating identical callouts
+    let lastSpokenMessage = '';
+
+    function buildNarrationMessage(scoredDets) {
       if (!scoredDets || !scoredDets.length) return null;
 
-      // Count objects by class, pick top threats
-      const threats = scoredDets
-        .filter(sd => sd.danger >= 20)
-        .sort((a, b) => b.danger - a.danger);
-
-      if (!threats.length) return null;
-
-      // Group by class
+      // Group all detections by class
       const counts = {};
-      for (const t of threats) {
-        const cls = t.det.class;
+      for (const sd of scoredDets) {
+        const cls = sd.det.class;
         counts[cls] = (counts[cls] || 0) + 1;
       }
 
-      const topDanger = threats[0].danger;
       const parts = [];
-
       for (const [cls, count] of Object.entries(counts)) {
-        // Pluralize
         const name = count > 1 ? cls + 's' : cls;
         parts.push(count > 1 ? `${count} ${name}` : name);
       }
 
-      const objectsStr = parts.slice(0, 3).join(', ');
-
-      if (zone === 'red') {
-        return `Danger! ${objectsStr} ahead!`;
-      } else if (zone === 'orange') {
-        return `Warning, ${objectsStr} nearby.`;
-      } else if (zone === 'yellow') {
-        return `Caution, ${objectsStr} detected.`;
-      }
-      return null;
+      return parts.slice(0, 5).join(', ');
     }
 
     function handleAlerts(zone, scoredDets) {
       const now = performance.now();
-      const interval = SPEECH_INTERVALS[zone];
 
-      // No alerts for green zone
-      if (zone === 'green') {
-        lastSpokenZone = 'green';
+      if (!scoredDets || !scoredDets.length) {
+        lastSpokenMessage = '';
         return;
       }
 
-      // Immediate alert on zone escalation
-      const zoneEscalated = (zone === 'red' && lastSpokenZone !== 'red') ||
-                            (zone === 'orange' && lastSpokenZone === 'green') ||
-                            (zone === 'orange' && lastSpokenZone === 'yellow');
+      // Narrate at regular intervals — more frequent when objects are closer
+      const interval = SPEECH_INTERVALS[zone] || 2000;
+      if (now - lastSpeechTime < interval) return;
 
-      if (zoneEscalated || (now - lastSpeechTime >= interval)) {
-        const message = buildAlertMessage(zone, scoredDets);
-        if (message) {
-          // Short beep before speech for attention
-          const freq = BEEP_FREQS[zone];
-          playBeep(freq, 60);
+      const message = buildNarrationMessage(scoredDets);
+      if (!message) return;
 
-          // Slight delay so beep is heard first
-          setTimeout(() => {
-            const urgency = zone === 'red' ? 'critical' : zone === 'orange' ? 'high' : 'normal';
-            speak(message, urgency);
-          }, 80);
+      // Don't repeat the exact same callout
+      if (message === lastSpokenMessage && zone === lastSpokenZone) return;
 
-          lastSpeechTime = now;
+      lastSpeechTime = now;
+      lastSpokenMessage = message;
+      lastSpokenZone = zone;
 
-          // Haptic
-          if (navigator.vibrate) {
-            const pattern = zone === 'red' ? [100, 50, 100] : zone === 'orange' ? [80] : [40];
-            navigator.vibrate(pattern);
-          }
+      // Beep only for close objects
+      if (zone === 'red' || zone === 'orange') {
+        playBeep(BEEP_FREQS[zone], 60);
+        if (navigator.vibrate) {
+          navigator.vibrate(zone === 'red' ? [100, 50, 100] : [80]);
         }
       }
 
-      lastSpokenZone = zone;
+      setTimeout(() => {
+        speak(message, zone === 'red' ? 'critical' : 'normal');
+      }, zone === 'red' || zone === 'orange' ? 80 : 0);
     }
 
     function playDrowsinessAlarm() {
@@ -1933,8 +1911,8 @@
       statLatency.textContent = latency + 'ms';
       hudTR.innerHTML = `LAT: ${latency}ms<br>FPS: ${fps}`;
 
-      // Filter to road-relevant classes
-      const roadDets = predictions.filter(p => ROAD_CLASSES.includes(p.class) && p.score > 0.35);
+      // All detected objects above confidence threshold
+      const roadDets = predictions.filter(p => p.score > 0.35);
 
       const videoW = video.videoWidth;
       const videoH = video.videoHeight;
