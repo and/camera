@@ -1,0 +1,1467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>ADAS // Road Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --cyan: #00f0ff;
+      --cyan-dim: #00f0ff44;
+      --cyan-glow: #00f0ff88;
+      --cyan-dark: #003844;
+      --magenta: #ff006a;
+      --amber: #ffaa00;
+      --green: #00ff88;
+      --red: #ff3344;
+      --bg: #030810;
+      --panel-bg: #060e18;
+      --border: #0a2a3a;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      background: var(--bg);
+      color: #c0dde8;
+      font-family: 'Share Tech Mono', monospace;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        linear-gradient(rgba(0,240,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,240,255,0.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+      animation: gridScroll 20s linear infinite;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    @keyframes gridScroll { to { transform: translate(40px, 40px); } }
+    @keyframes blink { 50% { opacity: 0; } }
+    @keyframes dotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }
+    @keyframes hexPulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 0.8; } }
+    @keyframes scanLine { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+    @keyframes sweepScan { 0% { top: -3px; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { top: 100%; opacity: 0; } }
+    @keyframes cardSlideIn { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes dangerPulse { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
+    @keyframes drowsinessFlash { 0%, 100% { opacity: 0; } 50% { opacity: 0.6; } }
+
+    /* Header */
+    #header {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 24px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(0,240,255,0.06) 0%, transparent 100%);
+    }
+
+    #header .logo {
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 900;
+      font-size: 0.85rem;
+      letter-spacing: 0.2em;
+      color: var(--cyan);
+      text-shadow: 0 0 20px var(--cyan-glow), 0 0 40px var(--cyan-dim);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    #header .logo .hex {
+      width: 28px;
+      height: 28px;
+      position: relative;
+    }
+    #header .logo .hex::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: var(--cyan);
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+      opacity: 0.3;
+      animation: hexPulse 2s ease-in-out infinite;
+    }
+    #header .logo .hex::after {
+      content: '';
+      position: absolute;
+      inset: 3px;
+      background: var(--bg);
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    }
+
+    #header .sys-info {
+      font-size: 0.65rem;
+      color: #3a6a7a;
+      text-align: right;
+      letter-spacing: 0.08em;
+    }
+    #header .sys-info .live {
+      color: var(--green);
+      animation: blink 1s step-end infinite;
+    }
+
+    #status {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.6rem;
+      letter-spacing: 0.15em;
+      color: var(--cyan);
+      text-transform: uppercase;
+      padding: 6px 24px;
+      background: rgba(0,240,255,0.04);
+      border-bottom: 1px solid var(--border);
+      position: relative;
+      z-index: 10;
+    }
+    #status::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      width: 100%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+      animation: scanLine 3s linear infinite;
+    }
+
+    /* Main layout */
+    #main {
+      display: flex;
+      height: calc(100vh - 90px);
+      position: relative;
+      z-index: 10;
+    }
+
+    /* Video container */
+    #container {
+      flex: 1;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      border-right: 1px solid var(--border);
+    }
+    #container::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.5) 100%);
+      pointer-events: none;
+      z-index: 3;
+    }
+
+    video {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      filter: saturate(0.5) brightness(0.9) contrast(1.1);
+    }
+
+    #hud-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 5;
+    }
+    #hud-overlay::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,240,255,0.015) 2px, rgba(0,240,255,0.015) 4px);
+    }
+    #hud-overlay::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, transparent 10%, var(--cyan-glow) 50%, transparent 90%);
+      box-shadow: 0 0 30px 10px var(--cyan-dim);
+      animation: sweepScan 3s ease-in-out infinite;
+    }
+
+    .corner-tl, .corner-tr, .corner-bl, .corner-br {
+      position: absolute;
+      width: 40px;
+      height: 40px;
+      z-index: 6;
+      pointer-events: none;
+    }
+    .corner-tl { top: 16px; left: 16px; border-top: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+    .corner-tr { top: 16px; right: 16px; border-top: 2px solid var(--cyan); border-right: 2px solid var(--cyan); }
+    .corner-bl { bottom: 16px; left: 16px; border-bottom: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+    .corner-br { bottom: 16px; right: 16px; border-bottom: 2px solid var(--cyan); border-right: 2px solid var(--cyan); }
+
+    .hud-data {
+      position: absolute;
+      z-index: 7;
+      font-size: 0.55rem;
+      color: #3a7a8a;
+      letter-spacing: 0.1em;
+      pointer-events: none;
+    }
+    .hud-data.top-left { top: 20px; left: 64px; }
+    .hud-data.top-right { top: 20px; right: 64px; text-align: right; }
+    .hud-data.bottom-left { bottom: 20px; left: 64px; }
+    .hud-data.bottom-right { bottom: 20px; right: 64px; text-align: right; }
+
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 4;
+    }
+
+    /* Danger zone lines */
+    .danger-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 1px;
+      z-index: 6;
+      pointer-events: none;
+      opacity: 0.4;
+    }
+    .danger-line.yellow { top: 60%; border-top: 1px dashed var(--amber); }
+    .danger-line.red { top: 80%; border-top: 1px dashed var(--red); }
+    .danger-line-label {
+      position: absolute;
+      right: 8px;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.4rem;
+      letter-spacing: 0.15em;
+      padding: 1px 4px;
+      background: rgba(0,0,0,0.6);
+    }
+    .danger-line.yellow .danger-line-label { top: -10px; color: var(--amber); }
+    .danger-line.red .danger-line-label { top: -10px; color: var(--red); }
+
+    /* Buttons */
+    .btn-hud {
+      position: absolute;
+      z-index: 20;
+      background: rgba(0, 15, 25, 0.8);
+      border: 1px solid var(--cyan-dim);
+      color: var(--cyan);
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.55rem;
+      letter-spacing: 0.15em;
+      padding: 6px 16px;
+      cursor: pointer;
+      backdrop-filter: blur(8px);
+      transition: background 0.2s, border-color 0.2s;
+    }
+    .btn-hud:hover { background: rgba(0,240,255,0.1); border-color: var(--cyan); }
+    .btn-hud:active { background: rgba(0,240,255,0.2); }
+
+    #cam-switch { bottom: 16px; left: 16px; }
+    #sensitivity-btn { bottom: 16px; right: 16px; }
+
+    /* Start overlay */
+    #start-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 30;
+      background: rgba(3,8,16,0.92);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+    }
+    #start-overlay.hidden { display: none; }
+
+    #start-btn {
+      background: transparent;
+      border: 2px solid var(--cyan);
+      color: var(--cyan);
+      font-family: 'Orbitron', sans-serif;
+      font-size: 1.2rem;
+      font-weight: 700;
+      letter-spacing: 0.3em;
+      padding: 16px 48px;
+      cursor: pointer;
+      text-shadow: 0 0 20px var(--cyan-glow);
+      box-shadow: 0 0 30px var(--cyan-dim), inset 0 0 30px var(--cyan-dim);
+      transition: all 0.3s;
+    }
+    #start-btn:hover {
+      background: rgba(0,240,255,0.1);
+      box-shadow: 0 0 50px var(--cyan-glow), inset 0 0 50px var(--cyan-dim);
+    }
+    .start-subtitle {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.7rem;
+      color: #3a6a7a;
+      letter-spacing: 0.1em;
+    }
+
+    /* Danger bar at top of video */
+    #danger-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 4px;
+      z-index: 8;
+      background: transparent;
+      transition: background 0.3s;
+    }
+
+    /* Driver check banner */
+    #driver-check-banner {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 25;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 1.2rem;
+      font-weight: 700;
+      letter-spacing: 0.3em;
+      color: var(--amber);
+      text-shadow: 0 0 20px rgba(255,170,0,0.6);
+      padding: 12px 32px;
+      border: 2px solid var(--amber);
+      background: rgba(3,8,16,0.85);
+      display: none;
+    }
+
+    /* Drowsiness flash overlay */
+    #drowsiness-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 26;
+      background: rgba(255,51,68,0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+      animation: dangerPulse 0.5s ease-in-out infinite;
+    }
+    #drowsiness-overlay .alert-text {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 1.5rem;
+      font-weight: 900;
+      color: #fff;
+      letter-spacing: 0.3em;
+      text-shadow: 0 0 30px var(--red);
+    }
+    #drowsiness-overlay .alert-sub {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.8rem;
+      color: #ffaaaa;
+      letter-spacing: 0.1em;
+    }
+
+    /* Side panel */
+    #panel {
+      width: 360px;
+      flex-shrink: 0;
+      background: var(--panel-bg);
+      overflow-y: auto;
+      padding: 0;
+      position: relative;
+    }
+    #panel::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, var(--cyan), transparent);
+    }
+
+    .panel-header {
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .panel-header h2 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      color: var(--cyan);
+      text-shadow: 0 0 10px var(--cyan-dim);
+    }
+    .panel-header .pulse-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 8px var(--cyan);
+      animation: dotPulse 1.5s ease-in-out infinite;
+    }
+
+    /* Danger level display */
+    .danger-display {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+    }
+    .danger-display::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 2px;
+      background: linear-gradient(180deg, var(--green), transparent);
+      transition: background 0.3s;
+    }
+    .danger-label {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.5rem;
+      letter-spacing: 0.2em;
+      color: #3a6a7a;
+      margin-bottom: 6px;
+    }
+    .danger-level {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 2.5rem;
+      font-weight: 900;
+      line-height: 1;
+      color: var(--green);
+      text-shadow: 0 0 30px rgba(0,255,136,0.3);
+      transition: color 0.3s, text-shadow 0.3s;
+    }
+    .danger-text {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.6rem;
+      letter-spacing: 0.2em;
+      margin-top: 4px;
+      color: var(--green);
+      transition: color 0.3s;
+    }
+    .danger-bar-track {
+      margin-top: 10px;
+      height: 6px;
+      background: #0a2030;
+      position: relative;
+      overflow: hidden;
+    }
+    .danger-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--green);
+      transition: width 0.4s, background 0.4s;
+      position: relative;
+    }
+    .danger-bar-fill::after {
+      content: '';
+      position: absolute;
+      right: 0; top: -3px; bottom: -3px;
+      width: 2px;
+      background: inherit;
+      box-shadow: 0 0 10px currentColor;
+    }
+    .danger-ticks {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 4px;
+      font-size: 0.45rem;
+      color: #2a4a5a;
+      letter-spacing: 0.05em;
+    }
+
+    /* Speed display */
+    .speed-section {
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .speed-value {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 1.8rem;
+      font-weight: 900;
+      color: var(--cyan);
+      text-shadow: 0 0 20px var(--cyan-dim);
+      line-height: 1;
+    }
+    .speed-unit {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.5rem;
+      color: #3a7a8a;
+      letter-spacing: 0.15em;
+    }
+    .speed-label {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.45rem;
+      color: #3a6a7a;
+      letter-spacing: 0.2em;
+      margin-left: auto;
+    }
+
+    /* Section headers */
+    .section-hdr {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px 6px;
+    }
+    .section-hdr h3 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.5rem;
+      font-weight: 500;
+      letter-spacing: 0.2em;
+      color: #4a7a8a;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .section-hdr .line {
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(90deg, var(--border), transparent);
+    }
+
+    /* Object list */
+    #object-list {
+      padding: 0 20px 12px;
+    }
+    .obj-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 0;
+      border-bottom: 1px solid rgba(10,42,58,0.5);
+      animation: cardSlideIn 0.2s ease-out;
+    }
+    .obj-row:last-child { border-bottom: none; }
+    .obj-dot {
+      width: 6px; height: 6px;
+      border-radius: 1px;
+      flex-shrink: 0;
+    }
+    .obj-name {
+      font-size: 0.65rem;
+      color: #7aacbc;
+      flex: 1;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .obj-conf {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.5rem;
+      color: #5a8a9a;
+      width: 32px;
+      text-align: right;
+    }
+    .obj-danger-track {
+      width: 60px;
+      height: 4px;
+      background: #0a1a2a;
+      flex-shrink: 0;
+      position: relative;
+      overflow: hidden;
+    }
+    .obj-danger-fill {
+      height: 100%;
+      transition: width 0.3s, background 0.3s;
+    }
+
+    /* Stats row */
+    .stats-row {
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .stat-label {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.4rem;
+      letter-spacing: 0.15em;
+      color: #3a6a7a;
+    }
+    .stat-value {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--cyan);
+    }
+
+    /* Driver status */
+    .driver-section {
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .driver-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .driver-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .driver-text {
+      font-size: 0.65rem;
+      color: var(--green);
+      letter-spacing: 0.08em;
+      transition: color 0.3s;
+    }
+    .driver-timer {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.45rem;
+      color: #3a6a7a;
+      letter-spacing: 0.1em;
+      margin-top: 4px;
+    }
+
+    /* Footer */
+    footer {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      z-index: 100;
+      padding: 8px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(0deg, rgba(3,8,16,0.95) 0%, transparent 100%);
+      font-size: 0.55rem;
+      color: #2a4a5a;
+      letter-spacing: 0.08em;
+      pointer-events: none;
+    }
+
+    /* Custom scrollbar */
+    #panel::-webkit-scrollbar { width: 4px; }
+    #panel::-webkit-scrollbar-track { background: var(--panel-bg); }
+    #panel::-webkit-scrollbar-thumb { background: var(--border); }
+    #panel::-webkit-scrollbar-thumb:hover { background: #1a4a5a; }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      html, body { height: auto; overflow: auto; }
+      #header { padding: 6px 12px; }
+      #header .logo { font-size: 0.7rem; }
+      #header .sys-info { font-size: 0.55rem; }
+      #status { padding: 4px 12px; font-size: 0.5rem; }
+      #main { flex-direction: column; height: auto; }
+      #container {
+        height: 55vh;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+      video { height: 100%; }
+      #panel { width: 100%; overflow-y: visible; }
+      footer { position: relative; }
+      .corner-tl, .corner-tr, .corner-bl, .corner-br { width: 24px; height: 24px; }
+      .hud-data { display: none; }
+      .danger-level { font-size: 2rem; }
+      .speed-value { font-size: 1.4rem; }
+      #driver-check-banner { font-size: 0.8rem; padding: 8px 20px; }
+      #drowsiness-overlay .alert-text { font-size: 1rem; }
+    }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <div class="logo">
+      <div class="hex"></div>
+      ADAS // ROAD MONITOR
+    </div>
+    <div class="sys-info">
+      <div>SYS.BUILD 7.4.1 // COLLISION DETECTION ACTIVE</div>
+      <div><span class="live">&#9679; LIVE</span> &mdash; INDIAN ROAD ANALYSIS</div>
+    </div>
+  </div>
+  <div id="status">INITIALIZING ADAS ENGINE...</div>
+
+  <div id="main">
+    <div id="container">
+      <video id="video" playsinline autoplay muted></video>
+      <canvas id="canvas"></canvas>
+      <div id="hud-overlay"></div>
+      <div class="corner-tl"></div>
+      <div class="corner-tr"></div>
+      <div class="corner-bl"></div>
+      <div class="corner-br"></div>
+      <div class="hud-data top-left" id="hud-tl">FEED::CAM_ROAD<br>RES: --</div>
+      <div class="hud-data top-right" id="hud-tr">LAT: --ms<br>FPS: --</div>
+      <div class="hud-data bottom-left">MODE: ADAS<br>BACKEND: WEBGL</div>
+      <div class="hud-data bottom-right" id="hud-br">OBJECTS: 0<br>THREAT: NONE</div>
+
+      <div class="danger-line yellow"><span class="danger-line-label">CAUTION ZONE</span></div>
+      <div class="danger-line red"><span class="danger-line-label">DANGER ZONE</span></div>
+
+      <div id="danger-bar"></div>
+
+      <button class="btn-hud" id="cam-switch">SWITCH CAM</button>
+      <button class="btn-hud" id="sensitivity-btn">SENS: MED</button>
+
+      <div id="driver-check-banner">DRIVER CHECK</div>
+
+      <div id="drowsiness-overlay">
+        <div class="alert-text">DROWSINESS DETECTED</div>
+        <div class="alert-sub">WAKE UP // PULL OVER SAFELY</div>
+      </div>
+
+      <div id="start-overlay">
+        <button id="start-btn">START ADAS</button>
+        <div class="start-subtitle">TAP TO INITIALIZE DETECTION + AUDIO</div>
+      </div>
+    </div>
+
+    <div id="panel">
+      <div class="panel-header">
+        <div class="pulse-dot"></div>
+        <h2>THREAT ANALYSIS</h2>
+      </div>
+
+      <div class="danger-display" id="danger-display">
+        <div class="danger-label">MAX THREAT LEVEL</div>
+        <div class="danger-level" id="danger-level-num">0</div>
+        <div class="danger-text" id="danger-level-text">CLEAR</div>
+        <div class="danger-bar-track">
+          <div class="danger-bar-fill" id="danger-bar-fill"></div>
+        </div>
+        <div class="danger-ticks">
+          <span>CLEAR</span><span>LOW</span><span>MEDIUM</span><span>HIGH</span><span>CRITICAL</span>
+        </div>
+      </div>
+
+      <div class="speed-section">
+        <span class="speed-value" id="speed-value">--</span>
+        <span class="speed-unit">KM/H</span>
+        <span class="speed-label">GPS SPEED</span>
+      </div>
+
+      <div class="stats-row" id="stats-row">
+        <div class="stat-item">
+          <span class="stat-label">OBJECTS</span>
+          <span class="stat-value" id="stat-objects">0</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">FPS</span>
+          <span class="stat-value" id="stat-fps">--</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">LATENCY</span>
+          <span class="stat-value" id="stat-latency">--</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">ALERTS</span>
+          <span class="stat-value" id="stat-alerts">0</span>
+        </div>
+      </div>
+
+      <div class="section-hdr"><h3>DETECTED OBJECTS</h3><div class="line"></div></div>
+      <div id="object-list">
+        <div style="padding: 20px 0; text-align: center; color: #2a4a5a; font-size: 0.7rem;">
+          AWAITING DETECTION<br>
+          <span style="font-family: 'Orbitron', sans-serif; font-size: 0.5rem; color: var(--amber); animation: blink 1.2s step-end infinite;">SCANNING...</span>
+        </div>
+      </div>
+
+      <div class="section-hdr"><h3>DRIVER MONITOR</h3><div class="line"></div></div>
+      <div class="driver-section">
+        <div class="driver-status">
+          <div class="driver-dot" id="driver-dot"></div>
+          <span class="driver-text" id="driver-text">STANDBY</span>
+        </div>
+        <div class="driver-timer" id="driver-timer">NEXT CHECK: --s</div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <span>ADAS MONITOR v1.0 &copy; 2026</span>
+    <span>TF.js + COCO-SSD // Human.js</span>
+  </footer>
+
+  <!-- TensorFlow.js + COCO-SSD -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+  <!-- Human.js for driver monitoring -->
+  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/human/dist/human.js"></script>
+
+  <script>
+    // ===== CONSTANTS =====
+    const ROAD_CLASSES = [
+      'person', 'bicycle', 'car', 'motorcycle', 'bus', 'truck',
+      'dog', 'cat', 'cow', 'horse', 'sheep',
+      'traffic light', 'stop sign', 'fire hydrant'
+    ];
+
+    const CLASS_URGENCY = {
+      person: 1.5, bicycle: 1.3, motorcycle: 1.2, dog: 1.5, cat: 1.3,
+      cow: 1.6, horse: 1.5, sheep: 1.4,
+      car: 1.0, bus: 1.0, truck: 1.0,
+      'traffic light': 0.5, 'stop sign': 0.7, 'fire hydrant': 0.3
+    };
+
+    const DANGER_COLORS = {
+      green:  { color: '#00ff88', glow: 'rgba(0,255,136,0.3)', label: 'CLEAR' },
+      yellow: { color: '#ffaa00', glow: 'rgba(255,170,0,0.3)', label: 'CAUTION' },
+      orange: { color: '#ff6644', glow: 'rgba(255,102,68,0.3)', label: 'WARNING' },
+      red:    { color: '#ff3344', glow: 'rgba(255,51,68,0.3)',  label: 'DANGER' }
+    };
+
+    const SENSITIVITY_LEVELS = { LOW: 0.7, MED: 1.0, HIGH: 1.4 };
+
+    const BEEP_INTERVALS = { green: 2000, yellow: 800, orange: 300, red: 100 };
+    const BEEP_FREQS     = { green: 440, yellow: 600, orange: 800, red: 1040 };
+
+    const INFERENCE_W = 320;
+    const INFERENCE_H = 240;
+    const DRIVER_CHECK_INTERVAL = 45000; // 45s
+    const DRIVER_CHECK_DURATION = 3000;  // 3s
+    const EAR_THRESHOLD = 0.2;
+    const DROWSY_DURATION = 2000; // 2s sustained for alarm
+
+    // ===== STATE =====
+    let model = null;
+    let humanInstance = null;
+    let audioCtx = null;
+    let facingMode = 'environment';
+    let sensitivity = 'MED';
+    let isRunning = false;
+    let isDriverCheck = false;
+    let alertCount = 0;
+
+    let lastTime = performance.now();
+    let frameCount = 0;
+    let fps = 0;
+    let skipFrames = 0;
+    let framesSinceLastDetect = 0;
+
+    // Object tracking for closing rate
+    let prevDetections = [];
+    let prevFrameTime = 0;
+
+    // Driver monitoring
+    let driverCheckTimer = null;
+    let driverCheckTimeout = null;
+    let lastDriverCheckTime = 0;
+    let drowsyStartTime = 0;
+    let isDrowsinessAlarm = false;
+
+    // Audio
+    let lastBeepTime = 0;
+    let currentDangerZone = 'green';
+
+    // Speed
+    let currentSpeed = null;
+    let geoWatchId = null;
+
+    // ===== DOM =====
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const container = document.getElementById('container');
+    const statusEl = document.getElementById('status');
+    const hudTL = document.getElementById('hud-tl');
+    const hudTR = document.getElementById('hud-tr');
+    const hudBR = document.getElementById('hud-br');
+    const dangerBar = document.getElementById('danger-bar');
+    const dangerLevelNum = document.getElementById('danger-level-num');
+    const dangerLevelText = document.getElementById('danger-level-text');
+    const dangerBarFill = document.getElementById('danger-bar-fill');
+    const dangerDisplay = document.getElementById('danger-display');
+    const objectList = document.getElementById('object-list');
+    const speedValue = document.getElementById('speed-value');
+    const statObjects = document.getElementById('stat-objects');
+    const statFps = document.getElementById('stat-fps');
+    const statLatency = document.getElementById('stat-latency');
+    const statAlerts = document.getElementById('stat-alerts');
+    const driverDot = document.getElementById('driver-dot');
+    const driverTextEl = document.getElementById('driver-text');
+    const driverTimerEl = document.getElementById('driver-timer');
+    const startOverlay = document.getElementById('start-overlay');
+    const driverCheckBanner = document.getElementById('driver-check-banner');
+    const drowsinessOverlay = document.getElementById('drowsiness-overlay');
+    const sensitivityBtn = document.getElementById('sensitivity-btn');
+
+    // Offscreen canvas for downscaled inference
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width = INFERENCE_W;
+    offCanvas.height = INFERENCE_H;
+    const offCtx = offCanvas.getContext('2d');
+
+    // ===== CAMERA =====
+    async function startCamera(facing) {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Camera API not available. HTTPS required.');
+      }
+      // Stop existing tracks
+      const tracks = video.srcObject?.getTracks();
+      if (tracks) tracks.forEach(t => t.stop());
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      return new Promise(resolve => { video.onloadeddata = resolve; });
+    }
+
+    // ===== AUDIO =====
+    function initAudio() {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+
+    function playBeep(freq, duration) {
+      if (!audioCtx || audioCtx.state === 'suspended') return;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.frequency.value = freq;
+      osc.type = 'square';
+      gain.gain.value = 0.15;
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration / 1000);
+      osc.start();
+      osc.stop(audioCtx.currentTime + duration / 1000);
+    }
+
+    function playDrowsinessAlarm() {
+      if (!audioCtx || audioCtx.state === 'suspended') return;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.frequency.value = 880;
+      osc.type = 'sawtooth';
+      gain.gain.value = 0.3;
+      // Warble effect
+      const lfo = audioCtx.createOscillator();
+      const lfoGain = audioCtx.createGain();
+      lfo.connect(lfoGain);
+      lfoGain.connect(osc.frequency);
+      lfo.frequency.value = 5;
+      lfoGain.gain.value = 200;
+      lfo.start();
+      osc.start();
+      osc.stop(audioCtx.currentTime + 2);
+      lfo.stop(audioCtx.currentTime + 2);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 2);
+    }
+
+    function handleBeeps(zone) {
+      const now = performance.now();
+      const interval = BEEP_INTERVALS[zone];
+      if (now - lastBeepTime >= interval) {
+        lastBeepTime = now;
+        const freq = BEEP_FREQS[zone];
+        const dur = zone === 'red' ? 80 : zone === 'orange' ? 60 : 40;
+        playBeep(freq, dur);
+
+        // Haptic
+        if (navigator.vibrate) {
+          const pattern = zone === 'red' ? [100, 50, 100] : zone === 'orange' ? [80] : zone === 'yellow' ? [40] : [];
+          if (pattern.length) navigator.vibrate(pattern);
+        }
+      }
+    }
+
+    // ===== DANGER ESTIMATION =====
+    function computeDangerScore(det, videoW, videoH) {
+      const [x, y, w, h] = det.bbox;
+      const cx = x + w / 2;
+      const cy = y + h / 2;
+
+      // 1. Bounding box area ratio (larger = closer)
+      const areaRatio = (w * h) / (videoW * videoH);
+      const areaDanger = Math.min(1, areaRatio * 15); // 6.7% of frame = max
+
+      // 2. Vertical position (lower = closer on road)
+      const verticalNorm = cy / videoH;
+      const vertDanger = Math.pow(verticalNorm, 1.5); // exponential near bottom
+
+      // 3. Center-horizontal bias (center of frame = vehicle's path)
+      const horizCenter = Math.abs(cx / videoW - 0.5) * 2; // 0=center, 1=edge
+      const horizWeight = 1 - horizCenter * 0.5; // center gets full weight
+
+      // 4. Closing rate from prev frame
+      let closingRate = 0;
+      if (prevDetections.length) {
+        const prev = findClosestPrev(det);
+        if (prev) {
+          const prevArea = prev.bbox[2] * prev.bbox[3];
+          const currArea = w * h;
+          const areaGrowth = (currArea - prevArea) / Math.max(prevArea, 1);
+          closingRate = Math.max(0, areaGrowth * 5); // positive = approaching
+        }
+      }
+
+      // 5. Class weighting
+      const urgency = CLASS_URGENCY[det.class] || 1.0;
+
+      // Combined score
+      const raw = (areaDanger * 0.35 + vertDanger * 0.25 + closingRate * 0.2 + 0.2) * horizWeight * urgency;
+      const sensitivityMult = SENSITIVITY_LEVELS[sensitivity];
+
+      return Math.min(100, Math.round(raw * 100 * sensitivityMult));
+    }
+
+    function findClosestPrev(det) {
+      const [x, y, w, h] = det.bbox;
+      const cx = x + w / 2;
+      const cy = y + h / 2;
+      let best = null;
+      let bestDist = Infinity;
+      for (const p of prevDetections) {
+        if (p.class !== det.class) continue;
+        const pcx = p.bbox[0] + p.bbox[2] / 2;
+        const pcy = p.bbox[1] + p.bbox[3] / 2;
+        const dist = Math.hypot(cx - pcx, cy - pcy);
+        if (dist < bestDist) { bestDist = dist; best = p; }
+      }
+      return bestDist < 100 ? best : null;
+    }
+
+    function getDangerZone(score) {
+      if (score >= 70) return 'red';
+      if (score >= 45) return 'orange';
+      if (score >= 25) return 'yellow';
+      return 'green';
+    }
+
+    function getDangerColor(score) {
+      const zone = getDangerZone(score);
+      return DANGER_COLORS[zone].color;
+    }
+
+    // ===== DRAWING =====
+    function drawDetections(detections, videoW, videoH) {
+      const cw = video.clientWidth;
+      const ch = video.clientHeight;
+      if (canvas.width !== videoW || canvas.height !== videoH) {
+        canvas.width = videoW;
+        canvas.height = videoH;
+        canvas.style.width = cw + 'px';
+        canvas.style.height = ch + 'px';
+      }
+
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, videoW, videoH);
+
+      // Scale from inference resolution to video resolution
+      const scaleX = videoW / INFERENCE_W;
+      const scaleY = videoH / INFERENCE_H;
+
+      let maxDanger = 0;
+      const scoredDets = [];
+
+      for (const det of detections) {
+        // Scale bbox to video resolution
+        const bx = det.bbox[0] * scaleX;
+        const by = det.bbox[1] * scaleY;
+        const bw = det.bbox[2] * scaleX;
+        const bh = det.bbox[3] * scaleY;
+        const scaledDet = { ...det, bbox: [bx, by, bw, bh] };
+
+        const danger = computeDangerScore(scaledDet, videoW, videoH);
+        if (danger > maxDanger) maxDanger = danger;
+        scoredDets.push({ det: scaledDet, danger, origDet: det });
+
+        const color = getDangerColor(danger);
+
+        // Draw bounding box
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 8;
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.shadowBlur = 0;
+
+        // Corner accents
+        const cornerLen = Math.min(bw, bh) * 0.2;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = color;
+        // TL
+        ctx.beginPath(); ctx.moveTo(bx, by + cornerLen); ctx.lineTo(bx, by); ctx.lineTo(bx + cornerLen, by); ctx.stroke();
+        // TR
+        ctx.beginPath(); ctx.moveTo(bx + bw - cornerLen, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + cornerLen); ctx.stroke();
+        // BL
+        ctx.beginPath(); ctx.moveTo(bx, by + bh - cornerLen); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + cornerLen, by + bh); ctx.stroke();
+        // BR
+        ctx.beginPath(); ctx.moveTo(bx + bw - cornerLen, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - cornerLen); ctx.stroke();
+
+        // Label
+        const label = `${det.class.toUpperCase()} [${danger}%]`;
+        ctx.font = '12px "Orbitron", sans-serif';
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.fillRect(bx, by - 18, tw + 8, 18);
+        ctx.fillStyle = color;
+        ctx.fillText(label, bx + 4, by - 5);
+
+        ctx.lineWidth = 1;
+      }
+
+      // Store for next frame's closing-rate calc
+      prevDetections = detections.map(d => ({
+        class: d.class,
+        bbox: [d.bbox[0] * scaleX, d.bbox[1] * scaleY, d.bbox[2] * scaleX, d.bbox[3] * scaleY]
+      }));
+
+      return { maxDanger, scoredDets };
+    }
+
+    // ===== PANEL UPDATE =====
+    function updateDangerDisplay(maxDanger) {
+      const zone = getDangerZone(maxDanger);
+      const info = DANGER_COLORS[zone];
+      currentDangerZone = zone;
+
+      dangerLevelNum.textContent = maxDanger;
+      dangerLevelNum.style.color = info.color;
+      dangerLevelNum.style.textShadow = `0 0 30px ${info.glow}`;
+      dangerLevelText.textContent = info.label;
+      dangerLevelText.style.color = info.color;
+      dangerBarFill.style.width = maxDanger + '%';
+      dangerBarFill.style.background = info.color;
+      dangerDisplay.querySelector('::before')
+      dangerBar.style.background = maxDanger > 25 ? info.color : 'transparent';
+
+      // Track alerts
+      if (zone === 'red' || zone === 'orange') {
+        alertCount++;
+        statAlerts.textContent = alertCount;
+      }
+    }
+
+    function updateObjectList(scoredDets) {
+      if (!scoredDets.length) {
+        objectList.innerHTML = `<div style="padding: 12px 0; text-align: center; color: #2a4a5a; font-size: 0.65rem;">NO THREATS DETECTED</div>`;
+        return;
+      }
+
+      // Sort by danger descending
+      scoredDets.sort((a, b) => b.danger - a.danger);
+      const top = scoredDets.slice(0, 8); // Show top 8
+
+      let html = '';
+      for (const sd of top) {
+        const color = getDangerColor(sd.danger);
+        const conf = Math.round(sd.det.score * 100);
+        html += `<div class="obj-row">
+          <div class="obj-dot" style="background:${color};box-shadow:0 0 6px ${color}"></div>
+          <span class="obj-name">${sd.det.class}</span>
+          <span class="obj-conf">${conf}%</span>
+          <div class="obj-danger-track">
+            <div class="obj-danger-fill" style="width:${sd.danger}%;background:${color}"></div>
+          </div>
+        </div>`;
+      }
+      objectList.innerHTML = html;
+    }
+
+    // ===== GPS SPEED =====
+    function initGPS() {
+      if (!navigator.geolocation) return;
+      geoWatchId = navigator.geolocation.watchPosition(
+        pos => {
+          if (pos.coords.speed !== null && pos.coords.speed >= 0) {
+            currentSpeed = Math.round(pos.coords.speed * 3.6); // m/s to km/h
+            speedValue.textContent = currentSpeed;
+          }
+        },
+        () => { speedValue.textContent = '--'; },
+        { enableHighAccuracy: true, maximumAge: 2000 }
+      );
+    }
+
+    // ===== ADAS DETECTION LOOP =====
+    async function adasDetectLoop() {
+      if (!isRunning || isDriverCheck) {
+        requestAnimationFrame(adasDetectLoop);
+        return;
+      }
+
+      // Adaptive frame skip
+      framesSinceLastDetect++;
+      if (fps > 0 && fps < 8 && skipFrames < 3) {
+        skipFrames = Math.min(3, Math.ceil(8 / fps));
+      } else if (fps >= 12) {
+        skipFrames = 0;
+      }
+      if (framesSinceLastDetect <= skipFrames) {
+        requestAnimationFrame(adasDetectLoop);
+        return;
+      }
+      framesSinceLastDetect = 0;
+
+      const t0 = performance.now();
+
+      // Downscale to offscreen canvas
+      offCtx.drawImage(video, 0, 0, INFERENCE_W, INFERENCE_H);
+
+      // Detect
+      let predictions;
+      try {
+        predictions = await model.detect(offCanvas);
+      } catch (e) {
+        console.warn('Detection error:', e);
+        requestAnimationFrame(adasDetectLoop);
+        return;
+      }
+
+      const latency = Math.round(performance.now() - t0);
+
+      // FPS counter
+      frameCount++;
+      if (performance.now() - lastTime > 1000) {
+        fps = frameCount;
+        frameCount = 0;
+        lastTime = performance.now();
+        statFps.textContent = fps;
+      }
+      statLatency.textContent = latency + 'ms';
+      hudTR.innerHTML = `LAT: ${latency}ms<br>FPS: ${fps}`;
+
+      // Filter to road-relevant classes
+      const roadDets = predictions.filter(p => ROAD_CLASSES.includes(p.class) && p.score > 0.35);
+
+      const videoW = video.videoWidth;
+      const videoH = video.videoHeight;
+
+      // Draw + score
+      const { maxDanger, scoredDets } = drawDetections(roadDets, videoW, videoH);
+
+      // Update panel
+      updateDangerDisplay(maxDanger);
+      updateObjectList(scoredDets);
+      statObjects.textContent = roadDets.length;
+
+      // HUD
+      hudTL.innerHTML = `FEED::CAM_ROAD<br>RES: ${videoW}x${videoH}`;
+      const threatText = maxDanger >= 70 ? 'CRITICAL' : maxDanger >= 45 ? 'HIGH' : maxDanger >= 25 ? 'LOW' : 'NONE';
+      hudBR.innerHTML = `OBJECTS: ${roadDets.length}<br>THREAT: ${threatText}`;
+
+      // Status bar
+      statusEl.textContent = roadDets.length
+        ? `TRACKING ${roadDets.length} OBJECT${roadDets.length > 1 ? 'S' : ''} // THREAT: ${threatText}`
+        : 'SCANNING ROAD // NO THREATS DETECTED';
+
+      // Audio alerts
+      handleBeeps(currentDangerZone);
+
+      requestAnimationFrame(adasDetectLoop);
+    }
+
+    // ===== DRIVER MONITORING =====
+    async function initHuman() {
+      humanInstance = new Human.Human({
+        backend: 'webgl',
+        modelBasePath: 'https://cdn.jsdelivr.net/npm/@vladmandic/human/models/',
+        face: {
+          enabled: true,
+          detector: { enabled: true, rotation: false, maxDetected: 1 },
+          mesh: { enabled: true },
+          iris: { enabled: true },
+          description: { enabled: false },
+          emotion: { enabled: false },
+        },
+        body: { enabled: false },
+        hand: { enabled: false },
+        gesture: { enabled: false },
+        segmentation: { enabled: false },
+      });
+      await humanInstance.load();
+    }
+
+    function computeEAR(landmarks) {
+      // Eye Aspect Ratio using face mesh landmarks
+      // Left eye: landmarks 33 (left corner), 133 (right corner), 159 (top), 145 (bottom), 158 (top2), 153 (bottom2)
+      // Right eye: landmarks 362 (left corner), 263 (right corner), 386 (top), 374 (bottom), 385 (top2), 380 (bottom2)
+      if (!landmarks || landmarks.length < 400) return 1;
+
+      function dist(a, b) {
+        return Math.hypot(a[0] - b[0], a[1] - b[1]);
+      }
+
+      // Left eye
+      const lV1 = dist(landmarks[159], landmarks[145]);
+      const lV2 = dist(landmarks[158], landmarks[153]);
+      const lH  = dist(landmarks[33], landmarks[133]);
+      const leftEAR = (lV1 + lV2) / (2 * lH);
+
+      // Right eye
+      const rV1 = dist(landmarks[386], landmarks[374]);
+      const rV2 = dist(landmarks[385], landmarks[380]);
+      const rH  = dist(landmarks[362], landmarks[263]);
+      const rightEAR = (rV1 + rV2) / (2 * rH);
+
+      return (leftEAR + rightEAR) / 2;
+    }
+
+    async function performDriverCheck() {
+      if (!humanInstance || isDriverCheck) return;
+
+      isDriverCheck = true;
+      driverCheckBanner.style.display = 'block';
+      driverTextEl.textContent = 'CHECKING...';
+      driverTextEl.style.color = 'var(--amber)';
+      driverDot.style.background = 'var(--amber)';
+      driverDot.style.boxShadow = '0 0 8px var(--amber)';
+
+      // Switch to front camera
+      try {
+        await startCamera('user');
+      } catch (e) {
+        console.warn('Front camera switch failed:', e);
+        isDriverCheck = false;
+        driverCheckBanner.style.display = 'none';
+        await startCamera('environment');
+        return;
+      }
+
+      // Wait a moment for camera to stabilize
+      await new Promise(r => setTimeout(r, 500));
+
+      // Run face detection for remaining time
+      const checkStart = performance.now();
+      let drowsyDetected = false;
+      let noFaceFrames = 0;
+      let totalFrames = 0;
+
+      while (performance.now() - checkStart < DRIVER_CHECK_DURATION - 500) {
+        try {
+          const result = await humanInstance.detect(video);
+          totalFrames++;
+
+          if (result.face.length === 0) {
+            noFaceFrames++;
+          } else {
+            const face = result.face[0];
+            const mesh = face.mesh;
+            if (mesh) {
+              const ear = computeEAR(mesh);
+              if (ear < EAR_THRESHOLD) {
+                drowsyDetected = true;
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('Driver check detection error:', e);
+        }
+      }
+
+      // Evaluate
+      const noFaceRatio = totalFrames > 0 ? noFaceFrames / totalFrames : 0;
+
+      if (drowsyDetected) {
+        triggerDrowsinessAlarm('EYES CLOSED DETECTED');
+      } else if (noFaceRatio > 0.7) {
+        triggerDrowsinessAlarm('DRIVER NOT VISIBLE');
+      } else {
+        driverTextEl.textContent = 'ALERT';
+        driverTextEl.style.color = 'var(--green)';
+        driverDot.style.background = 'var(--green)';
+        driverDot.style.boxShadow = '0 0 8px var(--green)';
+      }
+
+      // Switch back to road camera
+      driverCheckBanner.style.display = 'none';
+      isDriverCheck = false;
+      try {
+        await startCamera(facingMode);
+      } catch (e) {
+        statusEl.textContent = 'CAMERA RESTORE FAILED';
+      }
+
+      lastDriverCheckTime = performance.now();
+    }
+
+    function triggerDrowsinessAlarm(reason) {
+      drowsinessOverlay.style.display = 'flex';
+      driverTextEl.textContent = reason;
+      driverTextEl.style.color = 'var(--red)';
+      driverDot.style.background = 'var(--red)';
+      driverDot.style.boxShadow = '0 0 8px var(--red)';
+
+      playDrowsinessAlarm();
+      if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 500]);
+
+      setTimeout(() => {
+        drowsinessOverlay.style.display = 'none';
+      }, 3000);
+    }
+
+    function startDriverCheckTimer() {
+      lastDriverCheckTime = performance.now();
+      driverCheckTimer = setInterval(() => {
+        const elapsed = performance.now() - lastDriverCheckTime;
+        const remaining = Math.max(0, Math.round((DRIVER_CHECK_INTERVAL - elapsed) / 1000));
+        driverTimerEl.textContent = `NEXT CHECK: ${remaining}s`;
+
+        if (elapsed >= DRIVER_CHECK_INTERVAL) {
+          performDriverCheck();
+        }
+      }, 1000);
+    }
+
+    // ===== SENSITIVITY TOGGLE =====
+    sensitivityBtn.addEventListener('click', () => {
+      const levels = ['LOW', 'MED', 'HIGH'];
+      const idx = levels.indexOf(sensitivity);
+      sensitivity = levels[(idx + 1) % levels.length];
+      sensitivityBtn.textContent = `SENS: ${sensitivity}`;
+    });
+
+    // ===== CAMERA SWITCH =====
+    document.getElementById('cam-switch').addEventListener('click', async () => {
+      facingMode = facingMode === 'environment' ? 'user' : 'environment';
+      try {
+        await startCamera(facingMode);
+      } catch (err) {
+        statusEl.textContent = 'CAMERA SWITCH FAILED: ' + err.message;
+      }
+    });
+
+    // ===== START =====
+    document.getElementById('start-btn').addEventListener('click', async () => {
+      startOverlay.classList.add('hidden');
+      initAudio();
+
+      try {
+        statusEl.textContent = 'LOADING COCO-SSD MODEL...';
+        model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+
+        statusEl.textContent = 'LOADING DRIVER MONITOR...';
+        await initHuman();
+
+        statusEl.textContent = 'INITIALIZING CAMERA...';
+        await startCamera(facingMode);
+
+        initGPS();
+
+        isRunning = true;
+        statusEl.textContent = 'ADAS ONLINE // SCANNING ROAD...';
+        startDriverCheckTimer();
+        adasDetectLoop();
+      } catch (err) {
+        statusEl.textContent = 'ERROR: ' + err.message;
+        statusEl.style.color = 'var(--red)';
+        console.error(err);
+      }
+    });
+  </script>
+</body>
+</html>
