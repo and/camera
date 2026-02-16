@@ -271,6 +271,51 @@
     #cam-switch { bottom: 16px; left: 16px; }
     #sensitivity-btn { bottom: 16px; right: 16px; }
 
+    /* Toggle switch */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .toggle-label {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.5rem;
+      letter-spacing: 0.15em;
+      color: #4a7a8a;
+    }
+    .toggle-switch {
+      position: relative;
+      width: 40px;
+      height: 20px;
+      background: #0a2030;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.3s, border-color 0.3s;
+    }
+    .toggle-switch.active {
+      background: rgba(0,240,255,0.15);
+      border-color: var(--cyan);
+    }
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #3a6a7a;
+      transition: transform 0.3s, background 0.3s;
+    }
+    .toggle-switch.active::after {
+      transform: translateX(20px);
+      background: var(--cyan);
+      box-shadow: 0 0 8px var(--cyan);
+    }
+
     /* Start overlay */
     #start-overlay {
       position: absolute;
@@ -779,12 +824,16 @@
       </div>
 
       <div class="section-hdr"><h3>DRIVER MONITOR</h3><div class="line"></div></div>
-      <div class="driver-section">
+      <div class="toggle-row">
+        <span class="toggle-label">DROWSINESS CHECK</span>
+        <div class="toggle-switch" id="driver-toggle"></div>
+      </div>
+      <div class="driver-section" id="driver-section">
         <div class="driver-status">
           <div class="driver-dot" id="driver-dot"></div>
-          <span class="driver-text" id="driver-text">STANDBY</span>
+          <span class="driver-text" id="driver-text">DISABLED</span>
         </div>
-        <div class="driver-timer" id="driver-timer">NEXT CHECK: --s</div>
+        <div class="driver-timer" id="driver-timer">--</div>
       </div>
     </div>
   </div>
@@ -855,6 +904,7 @@
     let prevFrameTime = 0;
 
     // Driver monitoring
+    let driverMonitorEnabled = localStorage.getItem('adas_driver_monitor') === 'true';
     let driverCheckTimer = null;
     let driverCheckTimeout = null;
     let lastDriverCheckTime = 0;
@@ -895,6 +945,7 @@
     const driverCheckBanner = document.getElementById('driver-check-banner');
     const drowsinessOverlay = document.getElementById('drowsiness-overlay');
     const sensitivityBtn = document.getElementById('sensitivity-btn');
+    const driverToggle = document.getElementById('driver-toggle');
 
     // Offscreen canvas for downscaled inference
     const offCanvas = document.createElement('canvas');
@@ -911,10 +962,19 @@
       const tracks = video.srcObject?.getTracks();
       if (tracks) tracks.forEach(t => t.stop());
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
+      // Try exact facingMode first, fall back to ideal
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+      } catch (e) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+      }
       video.srcObject = stream;
       return new Promise(resolve => { video.onloadeddata = resolve; });
     }
@@ -1405,8 +1465,10 @@
     }
 
     function startDriverCheckTimer() {
+      stopDriverCheckTimer();
       lastDriverCheckTime = performance.now();
       driverCheckTimer = setInterval(() => {
+        if (!driverMonitorEnabled) return;
         const elapsed = performance.now() - lastDriverCheckTime;
         const remaining = Math.max(0, Math.round((DRIVER_CHECK_INTERVAL - elapsed) / 1000));
         driverTimerEl.textContent = `NEXT CHECK: ${remaining}s`;
@@ -1417,12 +1479,65 @@
       }, 1000);
     }
 
+    function stopDriverCheckTimer() {
+      if (driverCheckTimer) {
+        clearInterval(driverCheckTimer);
+        driverCheckTimer = null;
+      }
+    }
+
+    function updateDriverToggleUI() {
+      if (driverMonitorEnabled) {
+        driverToggle.classList.add('active');
+        driverTextEl.textContent = 'STANDBY';
+        driverTextEl.style.color = 'var(--green)';
+        driverDot.style.background = 'var(--green)';
+        driverDot.style.boxShadow = '0 0 8px var(--green)';
+        driverTimerEl.textContent = `NEXT CHECK: ${DRIVER_CHECK_INTERVAL / 1000}s`;
+      } else {
+        driverToggle.classList.remove('active');
+        driverTextEl.textContent = 'DISABLED';
+        driverTextEl.style.color = '#3a6a7a';
+        driverDot.style.background = '#3a6a7a';
+        driverDot.style.boxShadow = 'none';
+        driverTimerEl.textContent = '--';
+      }
+    }
+
+    // ===== DRIVER TOGGLE =====
+    driverToggle.addEventListener('click', async () => {
+      driverMonitorEnabled = !driverMonitorEnabled;
+      localStorage.setItem('adas_driver_monitor', driverMonitorEnabled);
+      updateDriverToggleUI();
+
+      if (driverMonitorEnabled && isRunning) {
+        if (!humanInstance) {
+          statusEl.textContent = 'LOADING DRIVER MONITOR...';
+          try {
+            await initHuman();
+            statusEl.textContent = 'ADAS ONLINE // DRIVER MONITOR ACTIVE';
+          } catch (err) {
+            console.error('Failed to load Human.js:', err);
+            driverMonitorEnabled = false;
+            localStorage.setItem('adas_driver_monitor', 'false');
+            updateDriverToggleUI();
+            statusEl.textContent = 'DRIVER MONITOR LOAD FAILED';
+            return;
+          }
+        }
+        startDriverCheckTimer();
+      } else {
+        stopDriverCheckTimer();
+      }
+    });
+
     // ===== SENSITIVITY TOGGLE =====
     sensitivityBtn.addEventListener('click', () => {
       const levels = ['LOW', 'MED', 'HIGH'];
       const idx = levels.indexOf(sensitivity);
       sensitivity = levels[(idx + 1) % levels.length];
       sensitivityBtn.textContent = `SENS: ${sensitivity}`;
+      localStorage.setItem('adas_sensitivity', sensitivity);
     });
 
     // ===== CAMERA SWITCH =====
@@ -1434,6 +1549,16 @@
         statusEl.textContent = 'CAMERA SWITCH FAILED: ' + err.message;
       }
     });
+
+    // ===== LOAD SAVED SETTINGS =====
+    function loadSettings() {
+      const savedSens = localStorage.getItem('adas_sensitivity');
+      if (savedSens && SENSITIVITY_LEVELS[savedSens]) {
+        sensitivity = savedSens;
+        sensitivityBtn.textContent = `SENS: ${sensitivity}`;
+      }
+      updateDriverToggleUI();
+    }
 
     // ===== START =====
     document.getElementById('start-btn').addEventListener('click', async () => {
@@ -1448,8 +1573,10 @@
         statusEl.textContent = 'LOADING COCO-SSD MODEL...';
         model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
 
-        statusEl.textContent = 'LOADING DRIVER MONITOR...';
-        await initHuman();
+        if (driverMonitorEnabled) {
+          statusEl.textContent = 'LOADING DRIVER MONITOR...';
+          await initHuman();
+        }
 
         statusEl.textContent = 'INITIALIZING CAMERA...';
         await startCamera(facingMode);
@@ -1457,8 +1584,13 @@
         initGPS();
 
         isRunning = true;
-        statusEl.textContent = 'ADAS ONLINE // SCANNING ROAD...';
-        startDriverCheckTimer();
+        statusEl.textContent = driverMonitorEnabled
+          ? 'ADAS ONLINE // DRIVER MONITOR ACTIVE'
+          : 'ADAS ONLINE // SCANNING ROAD...';
+
+        if (driverMonitorEnabled) {
+          startDriverCheckTimer();
+        }
         adasDetectLoop();
       } catch (err) {
         statusEl.textContent = 'ERROR: ' + err.message;
@@ -1466,6 +1598,9 @@
         console.error(err);
       }
     });
+
+    // Init saved settings on page load
+    loadSettings();
   </script>
 </body>
 </html>
