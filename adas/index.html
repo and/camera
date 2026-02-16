@@ -950,9 +950,19 @@
     let skipFrames = 0;
     let framesSinceLastDetect = 0;
 
-    // Object tracking for closing rate
+    // Object tracking — multi-frame history for velocity
     let prevDetections = [];
     let prevFrameTime = 0;
+    // Tracked objects: id -> { class, bbox[], history: [{cx,cy,area,time}], ttc, crossing }
+    let trackedObjects = {};
+    let nextTrackId = 0;
+    const TRACK_MAX_HISTORY = 8;
+    const TRACK_MATCH_DIST = 120;
+    // Critical alert state
+    let lastCriticalAlert = 0;
+    const CRITICAL_COOLDOWN = 1500; // min ms between critical alerts
+    let lastFollowingAlert = 0;
+    const FOLLOWING_COOLDOWN = 3000;
 
     // Lane detection
     let laneDetectionEnabled = localStorage.getItem('adas_lane_detection') === 'true';
@@ -1111,7 +1121,6 @@
     function buildNarrationMessage(scoredDets) {
       if (!scoredDets || !scoredDets.length) return null;
 
-      // Group all detections by class
       const counts = {};
       for (const sd of scoredDets) {
         const cls = sd.det.class;
@@ -1129,13 +1138,81 @@
 
     function handleAlerts(zone, scoredDets) {
       const now = performance.now();
-
       if (!scoredDets || !scoredDets.length) {
         lastSpokenMessage = '';
         return;
       }
 
-      // Narrate at regular intervals — more frequent when objects are closer
+      // === CRITICAL SAFETY ALERTS (highest priority, interrupt everything) ===
+
+      // 1. Pedestrian/animal crossing — immediate alert
+      for (const sd of scoredDets) {
+        if (!sd.track) continue;
+        if (sd.track.crossing && now - lastCriticalAlert > CRITICAL_COOLDOWN) {
+          const dir = sd.track.crossingDir || '';
+          const what = sd.det.class;
+          lastCriticalAlert = now;
+          lastSpeechTime = now;
+          playBeep(1040, 80);
+          if (navigator.vibrate) navigator.vibrate([150, 80, 150, 80, 150]);
+          setTimeout(() => speak(`${what} crossing from ${dir}!`, 'critical'), 90);
+          return; // one critical alert per frame
+        }
+      }
+
+      // 2. Time-to-collision — "too close" / "brake"
+      let lowestTTC = Infinity;
+      let ttcObject = null;
+      for (const sd of scoredDets) {
+        if (!sd.track) continue;
+        if (sd.track.ttc < lowestTTC) {
+          lowestTTC = sd.track.ttc;
+          ttcObject = sd;
+        }
+      }
+
+      if (lowestTTC < 1.5 && now - lastCriticalAlert > CRITICAL_COOLDOWN) {
+        // Imminent collision
+        lastCriticalAlert = now;
+        lastSpeechTime = now;
+        playBeep(1040, 100);
+        if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 200]);
+        const what = ttcObject.det.class;
+        setTimeout(() => speak(`Brake! ${what} too close!`, 'critical'), 100);
+        return;
+      }
+
+      if (lowestTTC < 3 && now - lastCriticalAlert > CRITICAL_COOLDOWN) {
+        lastCriticalAlert = now;
+        lastSpeechTime = now;
+        playBeep(880, 80);
+        if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+        const what = ttcObject.det.class;
+        setTimeout(() => speak(`Slow down, ${what} ahead, ${lowestTTC.toFixed(1)} seconds`, 'high'), 90);
+        return;
+      }
+
+      // 3. Following distance — at speed, large vehicle ahead filling frame
+      const speed = currentSpeed || 0;
+      if (speed > 20) {
+        for (const sd of scoredDets) {
+          const [, , bw, bh] = sd.det.bbox;
+          const areaRatio = (bw * bh) / ((video.videoWidth || 1280) * (video.videoHeight || 720));
+          const isVehicle = ['car', 'bus', 'truck', 'motorcycle'].includes(sd.det.class);
+          // At 40+ km/h with vehicle taking >12% of frame = too close
+          const areaThreshold = Math.max(0.06, 0.15 - speed * 0.001);
+          if (isVehicle && areaRatio > areaThreshold && now - lastFollowingAlert > FOLLOWING_COOLDOWN) {
+            lastFollowingAlert = now;
+            lastSpeechTime = now;
+            playBeep(700, 60);
+            if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
+            setTimeout(() => speak(`Too close to ${sd.det.class}, maintain distance`, 'high'), 80);
+            return;
+          }
+        }
+      }
+
+      // === REGULAR NARRATION (lower priority) ===
       const interval = SPEECH_INTERVALS[zone] || 2000;
       if (now - lastSpeechTime < interval) return;
 
@@ -1149,12 +1226,10 @@
       lastSpokenMessage = message;
       lastSpokenZone = zone;
 
-      // Beep only for close objects
+      // Beep for close objects
       if (zone === 'red' || zone === 'orange') {
         playBeep(BEEP_FREQS[zone], 60);
-        if (navigator.vibrate) {
-          navigator.vibrate(zone === 'red' ? [100, 50, 100] : [80]);
-        }
+        if (navigator.vibrate) navigator.vibrate(zone === 'red' ? [100, 50, 100] : [80]);
       }
 
       setTimeout(() => {
@@ -1188,60 +1263,188 @@
       speak('Wake up! Drowsiness detected! Pull over safely!', 'critical');
     }
 
+    // ===== OBJECT TRACKING =====
+    function updateTracking(detections, videoW, videoH) {
+      const now = performance.now();
+      const dt = prevFrameTime > 0 ? (now - prevFrameTime) / 1000 : 0.1; // seconds
+      prevFrameTime = now;
+
+      const used = new Set();
+      const newTracked = {};
+
+      // Match current detections to existing tracks
+      for (const det of detections) {
+        const [x, y, w, h] = det.bbox;
+        const cx = x + w / 2;
+        const cy = y + h / 2;
+        const area = w * h;
+
+        let bestId = null;
+        let bestDist = TRACK_MATCH_DIST;
+
+        for (const [id, track] of Object.entries(trackedObjects)) {
+          if (used.has(id)) continue;
+          if (track.class !== det.class) continue;
+          const last = track.history[track.history.length - 1];
+          const dist = Math.hypot(cx - last.cx, cy - last.cy);
+          if (dist < bestDist) { bestDist = dist; bestId = id; }
+        }
+
+        if (bestId !== null) {
+          // Update existing track
+          const track = trackedObjects[bestId];
+          track.bbox = det.bbox;
+          track.score = det.score;
+          track.history.push({ cx, cy, area, time: now });
+          if (track.history.length > TRACK_MAX_HISTORY) track.history.shift();
+          used.add(bestId);
+          newTracked[bestId] = track;
+        } else {
+          // New track
+          const id = 't' + (nextTrackId++);
+          newTracked[id] = {
+            class: det.class,
+            bbox: det.bbox,
+            score: det.score,
+            history: [{ cx, cy, area, time: now }],
+            ttc: Infinity,
+            crossing: false,
+            crossingDir: null
+          };
+        }
+      }
+
+      trackedObjects = newTracked;
+
+      // Compute TTC + crossing for each track
+      for (const [id, track] of Object.entries(trackedObjects)) {
+        computeTTC(track, videoW, videoH, dt);
+        if (track.class === 'person') {
+          detectCrossing(track, videoW, videoH);
+        }
+      }
+    }
+
+    function computeTTC(track, videoW, videoH, dt) {
+      const hist = track.history;
+      if (hist.length < 2) { track.ttc = Infinity; return; }
+
+      const curr = hist[hist.length - 1];
+      // Use oldest available for more stable rate
+      const prev = hist.length >= 4 ? hist[hist.length - 4] : hist[0];
+      const timeDelta = (curr.time - prev.time) / 1000;
+      if (timeDelta < 0.05) { track.ttc = Infinity; return; }
+
+      // Area growth rate (pixels²/second)
+      const areaRate = (curr.area - prev.area) / timeDelta;
+
+      if (areaRate <= 0) {
+        // Object not approaching
+        track.ttc = Infinity;
+        return;
+      }
+
+      // TTC = current_area / area_growth_rate
+      // (time until object "fills" a collision threshold)
+      // Normalize: treat 25% of frame as "collision imminent"
+      const frameArea = videoW * videoH;
+      const collisionArea = frameArea * 0.25;
+      const remaining = collisionArea - curr.area;
+
+      if (remaining <= 0) {
+        track.ttc = 0;
+      } else {
+        track.ttc = remaining / areaRate;
+      }
+
+      // Factor in our own speed — faster we go, less time we have
+      const speed = currentSpeed || 0;
+      if (speed > 10 && track.ttc > 0) {
+        // Reduce TTC proportionally to speed (higher speed = less margin)
+        const speedFactor = Math.max(0.3, 1 - (speed - 10) / 150);
+        track.ttc *= speedFactor;
+      }
+    }
+
+    function detectCrossing(track, videoW, videoH) {
+      const hist = track.history;
+      track.crossing = false;
+      track.crossingDir = null;
+
+      if (hist.length < 3) return;
+
+      const curr = hist[hist.length - 1];
+      const prev = hist.length >= 4 ? hist[hist.length - 4] : hist[0];
+      const timeDelta = (curr.time - prev.time) / 1000;
+      if (timeDelta < 0.05) return;
+
+      // Horizontal velocity (pixels/second)
+      const hVel = (curr.cx - prev.cx) / timeDelta;
+      // Vertical position — must be in lower 60% (on the road, not background)
+      const vertNorm = curr.cy / videoH;
+
+      // Person moving sideways significantly + in road area
+      const minHSpeed = videoW * 0.03; // 3% of frame width per second
+      if (Math.abs(hVel) > minHSpeed && vertNorm > 0.4) {
+        track.crossing = true;
+        track.crossingDir = hVel > 0 ? 'right' : 'left';
+      }
+    }
+
     // ===== DANGER ESTIMATION =====
-    function computeDangerScore(det, videoW, videoH) {
+    function computeDangerScore(det, trackId, videoW, videoH) {
       const [x, y, w, h] = det.bbox;
       const cx = x + w / 2;
       const cy = y + h / 2;
 
       // 1. Bounding box area ratio (larger = closer)
       const areaRatio = (w * h) / (videoW * videoH);
-      const areaDanger = Math.min(1, areaRatio * 15); // 6.7% of frame = max
+      const areaDanger = Math.min(1, areaRatio * 15);
 
       // 2. Vertical position (lower = closer on road)
       const verticalNorm = cy / videoH;
-      const vertDanger = Math.pow(verticalNorm, 1.5); // exponential near bottom
+      const vertDanger = Math.pow(verticalNorm, 1.5);
 
       // 3. Center-horizontal bias (center of frame = vehicle's path)
-      const horizCenter = Math.abs(cx / videoW - 0.5) * 2; // 0=center, 1=edge
-      const horizWeight = 1 - horizCenter * 0.5; // center gets full weight
+      const horizCenter = Math.abs(cx / videoW - 0.5) * 2;
+      const horizWeight = 1 - horizCenter * 0.5;
 
-      // 4. Closing rate from prev frame
+      // 4. Closing rate from tracking history
       let closingRate = 0;
-      if (prevDetections.length) {
-        const prev = findClosestPrev(det);
-        if (prev) {
-          const prevArea = prev.bbox[2] * prev.bbox[3];
-          const currArea = w * h;
-          const areaGrowth = (currArea - prevArea) / Math.max(prevArea, 1);
-          closingRate = Math.max(0, areaGrowth * 5); // positive = approaching
-        }
+      const track = trackId ? trackedObjects[trackId] : null;
+      if (track && track.history.length >= 2) {
+        const curr = track.history[track.history.length - 1];
+        const prev = track.history[Math.max(0, track.history.length - 3)];
+        const areaGrowth = (curr.area - prev.area) / Math.max(prev.area, 1);
+        closingRate = Math.max(0, areaGrowth * 5);
       }
 
-      // 5. Class weighting
+      // 5. TTC boost — very low TTC dramatically increases danger
+      let ttcBoost = 0;
+      if (track && track.ttc < 5) {
+        ttcBoost = Math.max(0, (5 - track.ttc) / 5) * 0.3; // up to 0.3 extra
+      }
+
+      // 6. Crossing boost — person crossing gets urgency bump
+      let crossingBoost = 0;
+      if (track && track.crossing) {
+        crossingBoost = 0.2;
+      }
+
+      // 7. Class weighting
       const urgency = CLASS_URGENCY[det.class] || 1.0;
 
-      // Combined score
-      const raw = (areaDanger * 0.35 + vertDanger * 0.25 + closingRate * 0.2 + 0.2) * horizWeight * urgency;
+      // 8. Speed factor — higher speed = more danger for close objects
+      let speedBoost = 0;
+      const speed = currentSpeed || 0;
+      if (speed > 30 && areaDanger > 0.2) {
+        speedBoost = Math.min(0.15, (speed - 30) / 300);
+      }
+
+      const raw = (areaDanger * 0.3 + vertDanger * 0.2 + closingRate * 0.15 + ttcBoost + crossingBoost + speedBoost + 0.15) * horizWeight * urgency;
       const sensitivityMult = SENSITIVITY_LEVELS[sensitivity];
 
       return Math.min(100, Math.round(raw * 100 * sensitivityMult));
-    }
-
-    function findClosestPrev(det) {
-      const [x, y, w, h] = det.bbox;
-      const cx = x + w / 2;
-      const cy = y + h / 2;
-      let best = null;
-      let bestDist = Infinity;
-      for (const p of prevDetections) {
-        if (p.class !== det.class) continue;
-        const pcx = p.bbox[0] + p.bbox[2] / 2;
-        const pcy = p.bbox[1] + p.bbox[3] / 2;
-        const dist = Math.hypot(cx - pcx, cy - pcy);
-        if (dist < bestDist) { bestDist = dist; best = p; }
-      }
-      return bestDist < 100 ? best : null;
     }
 
     function getDangerZone(score) {
@@ -1274,20 +1477,25 @@
       const scaleX = videoW / INFERENCE_W;
       const scaleY = videoH / INFERENCE_H;
 
+      // Scale detections and update tracking
+      const scaledDets = detections.map(d => ({
+        ...d,
+        bbox: [d.bbox[0] * scaleX, d.bbox[1] * scaleY, d.bbox[2] * scaleX, d.bbox[3] * scaleY]
+      }));
+
+      updateTracking(scaledDets, videoW, videoH);
+
       let maxDanger = 0;
       const scoredDets = [];
 
-      for (const det of detections) {
-        // Scale bbox to video resolution
-        const bx = det.bbox[0] * scaleX;
-        const by = det.bbox[1] * scaleY;
-        const bw = det.bbox[2] * scaleX;
-        const bh = det.bbox[3] * scaleY;
-        const scaledDet = { ...det, bbox: [bx, by, bw, bh] };
+      // Map tracked objects back to their track IDs
+      for (const [trackId, track] of Object.entries(trackedObjects)) {
+        const det = { class: track.class, bbox: track.bbox, score: track.score };
+        const [bx, by, bw, bh] = track.bbox;
 
-        const danger = computeDangerScore(scaledDet, videoW, videoH);
+        const danger = computeDangerScore(det, trackId, videoW, videoH);
         if (danger > maxDanger) maxDanger = danger;
-        scoredDets.push({ det: scaledDet, danger, origDet: det });
+        scoredDets.push({ det, danger, trackId, track });
 
         const color = getDangerColor(danger);
 
@@ -1303,17 +1511,20 @@
         const cornerLen = Math.min(bw, bh) * 0.2;
         ctx.lineWidth = 3;
         ctx.strokeStyle = color;
-        // TL
         ctx.beginPath(); ctx.moveTo(bx, by + cornerLen); ctx.lineTo(bx, by); ctx.lineTo(bx + cornerLen, by); ctx.stroke();
-        // TR
         ctx.beginPath(); ctx.moveTo(bx + bw - cornerLen, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + cornerLen); ctx.stroke();
-        // BL
         ctx.beginPath(); ctx.moveTo(bx, by + bh - cornerLen); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + cornerLen, by + bh); ctx.stroke();
-        // BR
         ctx.beginPath(); ctx.moveTo(bx + bw - cornerLen, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - cornerLen); ctx.stroke();
 
-        // Label
-        const label = `${det.class.toUpperCase()} [${danger}%]`;
+        // Label with TTC
+        let label = `${det.class.toUpperCase()} [${danger}%]`;
+        if (track.ttc < 5) {
+          label += ` TTC:${track.ttc.toFixed(1)}s`;
+        }
+        if (track.crossing) {
+          label += ` CROSSING`;
+        }
+
         ctx.font = '12px "Orbitron", sans-serif';
         const tw = ctx.measureText(label).width;
         ctx.fillStyle = 'rgba(0,0,0,0.7)';
@@ -1321,17 +1532,30 @@
         ctx.fillStyle = color;
         ctx.fillText(label, bx + 4, by - 5);
 
+        // Crossing arrow indicator
+        if (track.crossing) {
+          const arrowY = by + bh / 2;
+          const arrowX = track.crossingDir === 'right' ? bx + bw + 10 : bx - 10;
+          const arrowDir = track.crossingDir === 'right' ? 1 : -1;
+          ctx.strokeStyle = '#ff3344';
+          ctx.lineWidth = 3;
+          ctx.shadowColor = '#ff3344';
+          ctx.shadowBlur = 10;
+          ctx.beginPath();
+          ctx.moveTo(arrowX - arrowDir * 15, arrowY);
+          ctx.lineTo(arrowX + arrowDir * 15, arrowY);
+          ctx.lineTo(arrowX + arrowDir * 8, arrowY - 8);
+          ctx.moveTo(arrowX + arrowDir * 15, arrowY);
+          ctx.lineTo(arrowX + arrowDir * 8, arrowY + 8);
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+        }
+
         ctx.lineWidth = 1;
       }
 
       // Draw lane overlay on top
       drawLaneOverlay(ctx, videoW, videoH);
-
-      // Store for next frame's closing-rate calc
-      prevDetections = detections.map(d => ({
-        class: d.class,
-        bbox: [d.bbox[0] * scaleX, d.bbox[1] * scaleY, d.bbox[2] * scaleX, d.bbox[3] * scaleY]
-      }));
 
       return { maxDanger, scoredDets };
     }
@@ -1361,21 +1585,30 @@
 
     function updateObjectList(scoredDets) {
       if (!scoredDets.length) {
-        objectList.innerHTML = `<div style="padding: 12px 0; text-align: center; color: #2a4a5a; font-size: 0.65rem;">NO THREATS DETECTED</div>`;
+        objectList.innerHTML = `<div style="padding: 12px 0; text-align: center; color: #2a4a5a; font-size: 0.65rem;">NO OBJECTS DETECTED</div>`;
         return;
       }
 
       // Sort by danger descending
       scoredDets.sort((a, b) => b.danger - a.danger);
-      const top = scoredDets.slice(0, 8); // Show top 8
+      const top = scoredDets.slice(0, 8);
 
       let html = '';
       for (const sd of top) {
         const color = getDangerColor(sd.danger);
         const conf = Math.round(sd.det.score * 100);
+        let tags = '';
+        if (sd.track) {
+          if (sd.track.ttc < 3) {
+            tags += `<span style="color:var(--red);font-family:'Orbitron',sans-serif;font-size:0.4rem;margin-left:4px;">TTC:${sd.track.ttc.toFixed(1)}s</span>`;
+          }
+          if (sd.track.crossing) {
+            tags += `<span style="color:var(--red);font-family:'Orbitron',sans-serif;font-size:0.4rem;margin-left:4px;">CROSSING</span>`;
+          }
+        }
         html += `<div class="obj-row">
           <div class="obj-dot" style="background:${color};box-shadow:0 0 6px ${color}"></div>
-          <span class="obj-name">${sd.det.class}</span>
+          <span class="obj-name">${sd.det.class}${tags}</span>
           <span class="obj-conf">${conf}%</span>
           <div class="obj-danger-track">
             <div class="obj-danger-fill" style="width:${sd.danger}%;background:${color}"></div>
