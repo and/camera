@@ -551,6 +551,18 @@
       letter-spacing: 0.2em;
       margin-left: auto;
     }
+    .speed-detail {
+      padding: 4px 20px 8px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 12px;
+      font-size: 0.5rem;
+      color: #3a6a7a;
+      letter-spacing: 0.05em;
+    }
+    .speed-detail-item {
+      font-family: 'Share Tech Mono', monospace;
+    }
 
     /* Section headers */
     .section-hdr {
@@ -814,7 +826,12 @@
       <div class="speed-section">
         <span class="speed-value" id="speed-value">--</span>
         <span class="speed-unit">KM/H</span>
-        <span class="speed-label">GPS SPEED</span>
+        <span class="speed-label" id="speed-source">GPS</span>
+      </div>
+      <div class="speed-detail" id="speed-detail">
+        <span class="speed-detail-item">GPS: <span id="gps-speed-val">--</span></span>
+        <span class="speed-detail-item">CAM: <span id="visual-speed-val">--</span></span>
+        <span class="speed-detail-item" id="calibration-status">UNCALIBRATED</span>
       </div>
 
       <div class="stats-row" id="stats-row">
@@ -960,7 +977,19 @@
 
     // Speed
     let currentSpeed = null;
+    let gpsSpeed = null;
+    let visualSpeed = null;
     let geoWatchId = null;
+    // Visual speed estimation
+    let prevFlowFrame = null;
+    let flowCalibrationFactor = 0; // ratio: km/h per pixel-flow-unit
+    let flowCalibrationSamples = [];
+    const FLOW_W = 80;
+    const FLOW_H = 40;
+    const flowCanvas = document.createElement('canvas');
+    flowCanvas.width = FLOW_W;
+    flowCanvas.height = FLOW_H;
+    const flowCtx = flowCanvas.getContext('2d', { willReadFrequently: true });
 
     // ===== DOM =====
     const video = document.getElementById('video');
@@ -977,6 +1006,10 @@
     const dangerDisplay = document.getElementById('danger-display');
     const objectList = document.getElementById('object-list');
     const speedValue = document.getElementById('speed-value');
+    const speedSource = document.getElementById('speed-source');
+    const gpsSpeedVal = document.getElementById('gps-speed-val');
+    const visualSpeedVal = document.getElementById('visual-speed-val');
+    const calibrationStatus = document.getElementById('calibration-status');
     const statObjects = document.getElementById('stat-objects');
     const statFps = document.getElementById('stat-fps');
     const statLatency = document.getElementById('stat-latency');
@@ -1380,13 +1413,171 @@
       geoWatchId = navigator.geolocation.watchPosition(
         pos => {
           if (pos.coords.speed !== null && pos.coords.speed >= 0) {
-            currentSpeed = Math.round(pos.coords.speed * 3.6); // m/s to km/h
-            speedValue.textContent = currentSpeed;
+            gpsSpeed = Math.round(pos.coords.speed * 3.6); // m/s to km/h
+            gpsSpeedVal.textContent = gpsSpeed;
+            updateSpeedDisplay();
+            // Calibrate visual speed against GPS
+            calibrateVisualSpeed(gpsSpeed);
           }
         },
-        () => { speedValue.textContent = '--'; },
+        () => { gpsSpeedVal.textContent = '--'; },
         { enableHighAccuracy: true, maximumAge: 2000 }
       );
+    }
+
+    // ===== VISUAL SPEED ESTIMATION =====
+    function estimateVisualSpeed(videoEl) {
+      const vw = videoEl.videoWidth;
+      const vh = videoEl.videoHeight;
+      if (!vw || !vh) return;
+
+      // Grab lower 30% of frame (road surface, avoid horizon/sky)
+      const cropTop = vh * 0.7;
+      const cropH = vh * 0.3;
+      flowCtx.drawImage(videoEl, 0, cropTop, vw, cropH, 0, 0, FLOW_W, FLOW_H);
+      const currentFrame = flowCtx.getImageData(0, 0, FLOW_W, FLOW_H);
+
+      if (!prevFlowFrame) {
+        prevFlowFrame = currentFrame;
+        return;
+      }
+
+      // Block matching optical flow
+      // Divide into blocks and find vertical displacement
+      const blockSize = 8;
+      const searchRange = 6;
+      const blocksX = Math.floor(FLOW_W / blockSize);
+      const blocksY = Math.floor(FLOW_H / blockSize);
+      let totalFlow = 0;
+      let validBlocks = 0;
+
+      const curr = currentFrame.data;
+      const prev = prevFlowFrame.data;
+
+      for (let by = 0; by < blocksY; by++) {
+        for (let bx = 0; bx < blocksX; bx++) {
+          const startX = bx * blockSize;
+          const startY = by * blockSize;
+
+          let bestDY = 0;
+          let bestSAD = Infinity;
+
+          // Search vertically (road moves toward camera = downward)
+          for (let dy = -searchRange; dy <= searchRange; dy++) {
+            let sad = 0;
+            let pixels = 0;
+
+            for (let py = 0; py < blockSize; py++) {
+              for (let px = 0; px < blockSize; px++) {
+                const cx = startX + px;
+                const cy = startY + py;
+                const py2 = cy + dy;
+
+                if (py2 < 0 || py2 >= FLOW_H) continue;
+
+                const ci = (cy * FLOW_W + cx) * 4;
+                const pi = (py2 * FLOW_W + cx) * 4;
+
+                // Grayscale SAD
+                const cg = curr[ci] * 0.299 + curr[ci + 1] * 0.587 + curr[ci + 2] * 0.114;
+                const pg = prev[pi] * 0.299 + prev[pi + 1] * 0.587 + prev[pi + 2] * 0.114;
+                sad += Math.abs(cg - pg);
+                pixels++;
+              }
+            }
+
+            if (pixels > 0) sad /= pixels;
+            if (sad < bestSAD) {
+              bestSAD = sad;
+              bestDY = dy;
+            }
+          }
+
+          // Only count blocks with good match (low SAD) and non-zero motion
+          if (bestSAD < 30) {
+            totalFlow += Math.abs(bestDY);
+            validBlocks++;
+          }
+        }
+      }
+
+      prevFlowFrame = currentFrame;
+
+      if (validBlocks < 3) {
+        visualSpeed = 0;
+        visualSpeedVal.textContent = '0';
+        updateSpeedDisplay();
+        return;
+      }
+
+      const avgFlow = totalFlow / validBlocks;
+
+      // Apply calibration if available, otherwise show raw flow
+      if (flowCalibrationFactor > 0) {
+        visualSpeed = Math.round(avgFlow * flowCalibrationFactor);
+      } else {
+        // Rough default: assume ~15 km/h per pixel of flow at this resolution
+        visualSpeed = Math.round(avgFlow * 12);
+      }
+
+      visualSpeed = Math.max(0, Math.min(200, visualSpeed)); // clamp
+      visualSpeedVal.textContent = visualSpeed;
+      updateSpeedDisplay();
+    }
+
+    function calibrateVisualSpeed(gpsKmh) {
+      if (gpsKmh < 10 || visualSpeed === null || visualSpeed === 0) return;
+
+      // Compute the ratio: km/h per flow unit
+      // Use raw flow — need to recompute from visualSpeed
+      const rawFlow = flowCalibrationFactor > 0
+        ? visualSpeed / flowCalibrationFactor
+        : visualSpeed / 12;
+
+      if (rawFlow < 0.5) return;
+
+      const ratio = gpsKmh / rawFlow;
+      flowCalibrationSamples.push(ratio);
+
+      // Keep last 20 samples for rolling average
+      if (flowCalibrationSamples.length > 20) {
+        flowCalibrationSamples.shift();
+      }
+
+      // Need at least 5 samples to be confident
+      if (flowCalibrationSamples.length >= 5) {
+        // Median for robustness against outliers
+        const sorted = [...flowCalibrationSamples].sort((a, b) => a - b);
+        flowCalibrationFactor = sorted[Math.floor(sorted.length / 2)];
+        calibrationStatus.textContent = 'CALIBRATED';
+        calibrationStatus.style.color = 'var(--green)';
+      } else {
+        calibrationStatus.textContent = `CAL: ${flowCalibrationSamples.length}/5`;
+        calibrationStatus.style.color = 'var(--amber)';
+      }
+    }
+
+    function updateSpeedDisplay() {
+      // Prefer GPS, fall back to visual
+      if (gpsSpeed !== null && gpsSpeed >= 0) {
+        speedValue.textContent = gpsSpeed;
+        speedSource.textContent = 'GPS';
+        speedSource.style.color = '#3a6a7a';
+        currentSpeed = gpsSpeed;
+      } else if (visualSpeed !== null && flowCalibrationFactor > 0) {
+        speedValue.textContent = visualSpeed;
+        speedSource.textContent = 'CAM';
+        speedSource.style.color = 'var(--amber)';
+        currentSpeed = visualSpeed;
+      } else if (visualSpeed !== null) {
+        speedValue.textContent = '~' + visualSpeed;
+        speedSource.textContent = 'CAM*';
+        speedSource.style.color = 'var(--amber)';
+        currentSpeed = visualSpeed;
+      } else {
+        speedValue.textContent = '--';
+        speedSource.textContent = '--';
+      }
     }
 
     // ===== LANE DETECTION =====
@@ -1747,6 +1938,9 @@
 
       const videoW = video.videoWidth;
       const videoH = video.videoHeight;
+
+      // Visual speed estimation
+      estimateVisualSpeed(video);
 
       // Lane detection (runs on raw video, not offscreen)
       detectLanes(video);
