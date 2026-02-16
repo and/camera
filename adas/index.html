@@ -998,44 +998,136 @@
       osc.stop(audioCtx.currentTime + duration / 1000);
     }
 
-    function playDrowsinessAlarm() {
-      if (!audioCtx || audioCtx.state === 'suspended') return;
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.frequency.value = 880;
-      osc.type = 'sawtooth';
-      gain.gain.value = 0.3;
-      // Warble effect
-      const lfo = audioCtx.createOscillator();
-      const lfoGain = audioCtx.createGain();
-      lfo.connect(lfoGain);
-      lfoGain.connect(osc.frequency);
-      lfo.frequency.value = 5;
-      lfoGain.gain.value = 200;
-      lfo.start();
-      osc.start();
-      osc.stop(audioCtx.currentTime + 2);
-      lfo.stop(audioCtx.currentTime + 2);
-      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 2);
+    // ===== SPEECH ALERTS =====
+    let isSpeaking = false;
+    let lastSpeechTime = 0;
+    let lastSpokenZone = 'green';
+
+    // Minimum intervals between speech by zone
+    const SPEECH_INTERVALS = { green: 0, yellow: 4000, orange: 2500, red: 1500 };
+
+    function speak(text, urgency) {
+      if (!('speechSynthesis' in window)) return;
+      if (isSpeaking && urgency !== 'critical') return;
+
+      // Cancel any ongoing speech for critical alerts
+      if (urgency === 'critical') {
+        window.speechSynthesis.cancel();
+      }
+
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = urgency === 'critical' ? 1.3 : urgency === 'high' ? 1.15 : 1.0;
+      utterance.pitch = urgency === 'critical' ? 1.3 : urgency === 'high' ? 1.1 : 1.0;
+      utterance.volume = 1;
+      utterance.onstart = () => { isSpeaking = true; };
+      utterance.onend = () => { isSpeaking = false; };
+      utterance.onerror = () => { isSpeaking = false; };
+      window.speechSynthesis.speak(utterance);
     }
 
-    function handleBeeps(zone) {
-      const now = performance.now();
-      const interval = BEEP_INTERVALS[zone];
-      if (now - lastBeepTime >= interval) {
-        lastBeepTime = now;
-        const freq = BEEP_FREQS[zone];
-        const dur = zone === 'red' ? 80 : zone === 'orange' ? 60 : 40;
-        playBeep(freq, dur);
+    function buildAlertMessage(zone, scoredDets) {
+      if (!scoredDets || !scoredDets.length) return null;
 
-        // Haptic
-        if (navigator.vibrate) {
-          const pattern = zone === 'red' ? [100, 50, 100] : zone === 'orange' ? [80] : zone === 'yellow' ? [40] : [];
-          if (pattern.length) navigator.vibrate(pattern);
+      // Count objects by class, pick top threats
+      const threats = scoredDets
+        .filter(sd => sd.danger >= 20)
+        .sort((a, b) => b.danger - a.danger);
+
+      if (!threats.length) return null;
+
+      // Group by class
+      const counts = {};
+      for (const t of threats) {
+        const cls = t.det.class;
+        counts[cls] = (counts[cls] || 0) + 1;
+      }
+
+      const topDanger = threats[0].danger;
+      const parts = [];
+
+      for (const [cls, count] of Object.entries(counts)) {
+        // Pluralize
+        const name = count > 1 ? cls + 's' : cls;
+        parts.push(count > 1 ? `${count} ${name}` : name);
+      }
+
+      const objectsStr = parts.slice(0, 3).join(', ');
+
+      if (zone === 'red') {
+        return `Danger! ${objectsStr} ahead!`;
+      } else if (zone === 'orange') {
+        return `Warning, ${objectsStr} nearby.`;
+      } else if (zone === 'yellow') {
+        return `Caution, ${objectsStr} detected.`;
+      }
+      return null;
+    }
+
+    function handleAlerts(zone, scoredDets) {
+      const now = performance.now();
+      const interval = SPEECH_INTERVALS[zone];
+
+      // No alerts for green zone
+      if (zone === 'green') {
+        lastSpokenZone = 'green';
+        return;
+      }
+
+      // Immediate alert on zone escalation
+      const zoneEscalated = (zone === 'red' && lastSpokenZone !== 'red') ||
+                            (zone === 'orange' && lastSpokenZone === 'green') ||
+                            (zone === 'orange' && lastSpokenZone === 'yellow');
+
+      if (zoneEscalated || (now - lastSpeechTime >= interval)) {
+        const message = buildAlertMessage(zone, scoredDets);
+        if (message) {
+          // Short beep before speech for attention
+          const freq = BEEP_FREQS[zone];
+          playBeep(freq, 60);
+
+          // Slight delay so beep is heard first
+          setTimeout(() => {
+            const urgency = zone === 'red' ? 'critical' : zone === 'orange' ? 'high' : 'normal';
+            speak(message, urgency);
+          }, 80);
+
+          lastSpeechTime = now;
+
+          // Haptic
+          if (navigator.vibrate) {
+            const pattern = zone === 'red' ? [100, 50, 100] : zone === 'orange' ? [80] : [40];
+            navigator.vibrate(pattern);
+          }
         }
       }
+
+      lastSpokenZone = zone;
+    }
+
+    function playDrowsinessAlarm() {
+      // Alarm tone
+      if (audioCtx && audioCtx.state !== 'suspended') {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.frequency.value = 880;
+        osc.type = 'sawtooth';
+        gain.gain.value = 0.3;
+        const lfo = audioCtx.createOscillator();
+        const lfoGain = audioCtx.createGain();
+        lfo.connect(lfoGain);
+        lfoGain.connect(osc.frequency);
+        lfo.frequency.value = 5;
+        lfoGain.gain.value = 200;
+        lfo.start();
+        osc.start();
+        osc.stop(audioCtx.currentTime + 2);
+        lfo.stop(audioCtx.currentTime + 2);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 2);
+      }
+      // Also speak it
+      speak('Wake up! Drowsiness detected! Pull over safely!', 'critical');
     }
 
     // ===== DANGER ESTIMATION =====
@@ -1319,8 +1411,8 @@
         ? `TRACKING ${roadDets.length} OBJECT${roadDets.length > 1 ? 'S' : ''} // THREAT: ${threatText}`
         : 'SCANNING ROAD // NO THREATS DETECTED';
 
-      // Audio alerts
-      handleBeeps(currentDangerZone);
+      // Audio + speech alerts
+      handleAlerts(currentDangerZone, scoredDets);
 
       requestAnimationFrame(adasDetectLoop);
     }
