@@ -1441,6 +1441,10 @@
       initAudio();
 
       try {
+        statusEl.textContent = 'INITIALIZING TENSORFLOW...';
+        await tf.setBackend('webgl');
+        await tf.ready();
+
         statusEl.textContent = 'LOADING COCO-SSD MODEL...';
         model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
 
