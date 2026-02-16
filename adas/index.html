@@ -2144,8 +2144,8 @@
       statLatency.textContent = latency + 'ms';
       hudTR.innerHTML = `LAT: ${latency}ms<br>FPS: ${fps}`;
 
-      // All detected objects above confidence threshold
-      const roadDets = predictions.filter(p => p.score > 0.35);
+      // Filter to road-relevant objects only
+      const roadDets = predictions.filter(p => ROAD_CLASSES.includes(p.class) && p.score > 0.35);
 
       const videoW = video.videoWidth;
       const videoH = video.videoHeight;
