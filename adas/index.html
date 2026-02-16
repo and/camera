@@ -1317,9 +1317,10 @@
       trackedObjects = newTracked;
 
       // Compute TTC + crossing for each track
+      const CROSSING_CLASSES = ['person', 'dog', 'cat', 'cow', 'horse', 'sheep', 'bicycle'];
       for (const [id, track] of Object.entries(trackedObjects)) {
         computeTTC(track, videoW, videoH, dt);
-        if (track.class === 'person') {
+        if (CROSSING_CLASSES.includes(track.class)) {
           detectCrossing(track, videoW, videoH);
         }
       }
@@ -2103,28 +2104,15 @@
         return;
       }
 
-      // Adaptive frame skip
-      framesSinceLastDetect++;
-      if (fps > 0 && fps < 8 && skipFrames < 3) {
-        skipFrames = Math.min(3, Math.ceil(8 / fps));
-      } else if (fps >= 12) {
-        skipFrames = 0;
-      }
-      if (framesSinceLastDetect <= skipFrames) {
-        requestAnimationFrame(adasDetectLoop);
-        return;
-      }
-      framesSinceLastDetect = 0;
-
       const t0 = performance.now();
 
       // Downscale to offscreen canvas
       offCtx.drawImage(video, 0, 0, INFERENCE_W, INFERENCE_H);
 
-      // Detect
+      // Detect — run every frame, no skipping
       let predictions;
       try {
-        predictions = await model.detect(offCanvas);
+        predictions = await model.detect(offCanvas, 20, 0.2);
       } catch (e) {
         console.warn('Detection error:', e);
         requestAnimationFrame(adasDetectLoop);
@@ -2144,8 +2132,13 @@
       statLatency.textContent = latency + 'ms';
       hudTR.innerHTML = `LAT: ${latency}ms<br>FPS: ${fps}`;
 
-      // Filter to road-relevant objects only
-      const roadDets = predictions.filter(p => ROAD_CLASSES.includes(p.class) && p.score > 0.35);
+      // Filter to road-relevant objects — lower threshold for living things
+      const LIVING_CLASSES = ['person', 'dog', 'cat', 'cow', 'horse', 'sheep', 'bicycle'];
+      const roadDets = predictions.filter(p => {
+        if (!ROAD_CLASSES.includes(p.class)) return false;
+        const threshold = LIVING_CLASSES.includes(p.class) ? 0.25 : 0.35;
+        return p.score > threshold;
+      });
 
       const videoW = video.videoWidth;
       const videoH = video.videoHeight;
@@ -2450,7 +2443,7 @@
         await tf.ready();
 
         statusEl.textContent = 'LOADING COCO-SSD MODEL...';
-        model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+        model = await cocoSsd.load({ base: 'mobilenet_v2' });
 
         if (driverMonitorEnabled) {
           statusEl.textContent = 'LOADING DRIVER MONITOR...';
