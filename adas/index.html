@@ -161,6 +161,12 @@
       z-index: 3;
     }
 
+    #video-wrapper {
+      position: absolute;
+      inset: 0;
+      transition: transform 0.3s ease;
+    }
+
     video {
       display: block;
       width: 100%;
@@ -269,6 +275,7 @@
     .btn-hud:active { background: rgba(0,240,255,0.2); }
 
     #cam-switch { bottom: 16px; left: 16px; }
+    #rotate-btn { bottom: 16px; left: 50%; transform: translateX(-50%); }
     #sensitivity-btn { bottom: 16px; right: 16px; }
 
     /* Toggle switch */
@@ -739,8 +746,10 @@
 
   <div id="main">
     <div id="container">
-      <video id="video" playsinline autoplay muted></video>
-      <canvas id="canvas"></canvas>
+      <div id="video-wrapper">
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="canvas"></canvas>
+      </div>
       <div id="hud-overlay"></div>
       <div class="corner-tl"></div>
       <div class="corner-tr"></div>
@@ -757,6 +766,7 @@
       <div id="danger-bar"></div>
 
       <button class="btn-hud" id="cam-switch">SWITCH CAM</button>
+      <button class="btn-hud" id="rotate-btn">ROT: 0&deg;</button>
       <button class="btn-hud" id="sensitivity-btn">SENS: MED</button>
 
       <div id="driver-check-banner">DRIVER CHECK</div>
@@ -889,6 +899,7 @@
     let audioCtx = null;
     let facingMode = 'environment';
     let sensitivity = 'MED';
+    let rotation = 0; // 0, 90, 180, 270
     let isRunning = false;
     let isDriverCheck = false;
     let alertCount = 0;
@@ -1623,6 +1634,31 @@
       }
     });
 
+    // ===== ROTATION =====
+    const videoWrapper = document.getElementById('video-wrapper');
+    const rotateBtn = document.getElementById('rotate-btn');
+
+    function applyRotation() {
+      const is90or270 = (rotation === 90 || rotation === 270);
+      if (is90or270) {
+        // Scale up to fill container when rotated sideways
+        const containerEl = document.getElementById('container');
+        const cw = containerEl.clientWidth;
+        const ch = containerEl.clientHeight;
+        const scale = Math.max(cw / ch, ch / cw);
+        videoWrapper.style.transform = `rotate(${rotation}deg) scale(${scale})`;
+      } else {
+        videoWrapper.style.transform = `rotate(${rotation}deg)`;
+      }
+      rotateBtn.innerHTML = `ROT: ${rotation}&deg;`;
+    }
+
+    rotateBtn.addEventListener('click', () => {
+      rotation = (rotation + 90) % 360;
+      applyRotation();
+      localStorage.setItem('adas_rotation', rotation);
+    });
+
     // ===== SENSITIVITY TOGGLE =====
     sensitivityBtn.addEventListener('click', () => {
       const levels = ['LOW', 'MED', 'HIGH'];
@@ -1648,6 +1684,11 @@
       if (savedSens && SENSITIVITY_LEVELS[savedSens]) {
         sensitivity = savedSens;
         sensitivityBtn.textContent = `SENS: ${sensitivity}`;
+      }
+      const savedRot = parseInt(localStorage.getItem('adas_rotation'));
+      if ([0, 90, 180, 270].includes(savedRot)) {
+        rotation = savedRot;
+        applyRotation();
       }
       updateDriverToggleUI();
     }
